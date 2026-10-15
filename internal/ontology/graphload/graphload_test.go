@@ -284,6 +284,17 @@ func TestParseManifest_ClosureFailures(t *testing.T) {
 			wantWord: "to_class 是 Party，但实例 C-0001 属于 Contract",
 		},
 		{
+			// 关系方向写反：把 signed_by 的 from_class 改成 Party 后，
+			// 合同实例 C-0001 仍在使用它 —— 必须在 from 端（主体归属）被拒绝，
+			// 而不是等到 to 端给出一条指向客体实例的困惑报错。
+			name: "关系从错误的类出发（方向写反）",
+			mutate: func(s string) string {
+				return strings.Replace(s, `"from_class": "Contract", "to_class": "Party"`, `"from_class": "Party", "to_class": "Party"`, 1)
+			},
+			wantPtr:  "/instances/1/properties/signed_by",
+			wantWord: "只能从类 Party 出发",
+		},
+		{
 			name: "属性取值与声明类型不符",
 			mutate: func(s string) string {
 				return strings.Replace(s, `"amount": 100000`, `"amount": "十万"`, 1)

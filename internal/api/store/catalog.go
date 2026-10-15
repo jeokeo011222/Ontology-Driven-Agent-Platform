@@ -157,6 +157,9 @@ type CreateAgentInput struct {
 	PromptTemplate     []byte
 	ConfigJSON         []byte
 	DependencyManifest []byte
+	// Skills 是用户自建 Agent 显式绑定的技能键列表（写入 dependency_manifest.skills）。
+	// 每个 key 必须存在且有 PUBLISHED 版本（fail-closed，见 validateAgentSkillRefs）。
+	Skills []string
 }
 
 // CreateAgent 创建 Agent 定义与首个 DRAFT 版本（含其所属插件与插件版本）。
@@ -176,6 +179,12 @@ func (s *Store) CreateAgent(ctx context.Context, in CreateAgentInput) (map[strin
 	}
 	out := map[string]any{}
 	err = s.TenantTx(ctx, func(tx pgx.Tx) error {
+		// 技能绑定写入 dependency_manifest.skills；引用校验 fail-closed：
+		// 技能不存在 / 没有已发布版本 → 404，绝不带悬空引用入库（对齐 seed/load.go 对 tools 的口径）。
+		deps, err := mergeSkillDependencies(ctx, tx, in.DependencyManifest, in.Skills)
+		if err != nil {
+			return err
+		}
 		manifest, _ := json.Marshal(map[string]any{"kind": "AGENT", "agent_key": in.AgentKey})
 		pluginID, err := insertPlainPlugin(ctx, tx, "agent:"+in.AgentKey, "AGENT", in.AgentKey, manifest, createdBy)
 		if err != nil {
@@ -196,7 +205,6 @@ func (s *Store) CreateAgent(ctx context.Context, in CreateAgentInput) (map[strin
 		}
 		prompt, _ := optionalJSON(in.PromptTemplate)
 		cfg, _ := optionalJSON(in.ConfigJSON)
-		deps, _ := optionalJSON(in.DependencyManifest)
 		content, _ := json.Marshal(map[string]any{
 			"input": json.RawMessage(in.InputSchema), "output": json.RawMessage(in.OutputSchema),
 			"prompt": json.RawMessage(prompt), "config": json.RawMessage(cfg), "dependencies": json.RawMessage(deps),
@@ -496,15 +504,30 @@ type CreateToolInput struct {
 	OutputSchema []byte
 	Capabilities []string
 	EffectClass  string
+	// ExecutionConfig 是首个版本的执行契约（adapter=script 等）。
+	// 必须是合法 JSON（handler 侧已做 adapter=script 的强校验），空值落库为 '{}'。
+	ExecutionConfig []byte
 }
 
-// CreateTool 创建工具定义与首个 DRAFT 版本。
+// CreateTool 创建工具定义与首个版本。
+//
+// 首版状态规则：携带已校验执行契约（ExecutionConfig 非空）→ PUBLISHED；
+// 否则 → DRAFT。理由：平台不存在工具版本评审/发布链路（agent/workflow 有
+// Publish 端点，工具没有），而 InvokeTool 只放行 PUBLISHED——若首版一律
+// DRAFT，用户自建工具将永远不可调用（死路）。无执行契约的版本保持 DRAFT，
+// 继续被版本状态门禁 fail-closed 拦截。
 func (s *Store) CreateTool(ctx context.Context, in CreateToolInput) (map[string]any, error) {
 	if in.ToolKey == "" {
 		return nil, errors.E(errors.CodeInvalidArgument, "tool_key 必填")
 	}
 	if !json.Valid(in.InputSchema) || !json.Valid(in.OutputSchema) {
 		return nil, errors.E(errors.CodeInvalidArgument, "input_schema/output_schema 必须是合法 JSON")
+	}
+	execCfg := in.ExecutionConfig
+	if len(execCfg) == 0 {
+		execCfg = []byte("{}") // execution_config 列 NOT NULL DEFAULT '{}'
+	} else if !json.Valid(execCfg) {
+		return nil, errors.E(errors.CodeInvalidArgument, "execution_config 必须是合法 JSON")
 	}
 	if in.EffectClass == "" {
 		in.EffectClass = "READ"
@@ -538,26 +561,37 @@ func (s *Store) CreateTool(ctx context.Context, in CreateToolInput) (map[string]
 			toolID, pluginID, in.ToolKey, in.Description); err != nil {
 			return errors.Wrap(err, errors.CodeConflict, "tool_key 已存在")
 		}
-		content, _ := json.Marshal(map[string]any{"input": json.RawMessage(in.InputSchema), "output": json.RawMessage(in.OutputSchema)})
+		content, _ := json.Marshal(map[string]any{
+			"input":            json.RawMessage(in.InputSchema),
+			"output":           json.RawMessage(in.OutputSchema),
+			"execution_config": json.RawMessage(execCfg),
+		})
 		versionID := ids.New().String()
 		caps := in.Capabilities
 		if caps == nil {
 			caps = []string{}
 		}
+		// 两个分支都是本函数内的编译期常量字符串（非用户输入），拼接进 SQL 安全。
+		// 注意：registry.tool_versions 没有 published_at 列（工具版本无发布链路，
+		// 发布语义仅由 status 承载），不要在 INSERT 中引用它。
+		firstStatus := "DRAFT"
+		if len(in.ExecutionConfig) > 0 {
+			firstStatus = "PUBLISHED"
+		}
 		if _, err := tx.Exec(ctx, `
             INSERT INTO registry.tool_versions
                 (id, tenant_id, tool_id, plugin_version_id, version, input_schema, output_schema,
-                 capabilities, effect_class, content_digest, status)
-            VALUES ($1, app.current_tenant_id(), $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, 'DRAFT')`,
+                 capabilities, effect_class, execution_config, content_digest, status)
+            VALUES ($1, app.current_tenant_id(), $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9::jsonb, $10, '`+firstStatus+`')`,
 			versionID, toolID, pluginVersionID, in.Version, string(in.InputSchema), string(in.OutputSchema),
-			caps, in.EffectClass, digestBytes(content)); err != nil {
+			caps, in.EffectClass, string(execCfg), digestBytes(content)); err != nil {
 			return errors.Wrap(err, errors.CodeConflict, "工具版本已存在或写入失败")
 		}
 		out["id"] = toolID
 		out["tool_key"] = in.ToolKey
 		out["version_id"] = versionID
 		out["effect_class"] = in.EffectClass
-		out["status"] = "DRAFT"
+		out["status"] = firstStatus
 		return nil
 	})
 	if err != nil {

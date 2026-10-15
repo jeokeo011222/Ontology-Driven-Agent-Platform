@@ -110,6 +110,7 @@ export const queryKeys = {
   /* 设计资产 */
   agents: { list: () => ['agents', 'list'] as const, detail: (id: string) => ['agents', 'detail', id] as const },
   tools: { list: () => ['tools', 'list'] as const },
+  skills: { list: () => ['skills', 'list'] as const },
   workflows: { list: () => ['workflows', 'list'] as const },
   planTemplates: { list: () => ['plan-templates', 'list'] as const },
   dataSources: { list: () => ['data-sources', 'list'] as const },

@@ -281,7 +281,10 @@ func closureRepairPrompt(err error) string {
 		}
 	}
 	return msg + "\n请修正后重新输出**完整**的 JSON 对象（结构与字段不变，只改有问题的地方）。" +
-		"要点：每个关系取值都必须是 instances 里真实存在的 id，且目标实例的类必须等于该关系的 to_class；" +
+		"要点：①每条关系必须从其 from_class 对应的实例出发（主体实例的类 = from_class），" +
+		"且取值目标实例的类必须等于该关系的 to_class；若你在反向使用某条关系（方向写反），" +
+		"请交换 relations 里的 from_class/to_class 声明，或把关系放到正确一侧的实例上；" +
+		"②每个关系取值都必须是 instances 里真实存在的 id，" +
 		"若某条关系在 instances 里找不到匹配的目标实例，就补上该目标实例，或干脆去掉这条关系，" +
 		"绝不要保留指向不存在实例的引用。"
 }

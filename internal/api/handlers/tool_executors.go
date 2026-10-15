@@ -48,6 +48,11 @@ type executionConfig struct {
 	FailClosed          bool     `json:"fail_closed"`           // 远端失败时不降级（nc65）
 	RequiresApproval    bool     `json:"requires_approval"`     // 外部写需审批（mock-erp update）
 	IdempotencyKeyField string   `json:"idempotency_key_field"` // 幂等键取值字段
+	// ---- script 适配器（WASM 脚本工具，见 tool_executors_script.go）----
+	Language       string `json:"language"`         // 脚本语言，仅支持 "wasm"
+	WasmB64        string `json:"wasm_b64"`         // base64 编码的 .wasm 模块
+	TimeoutMs      int    `json:"timeout_ms"`       // 运行超时毫秒（缺省 30000，上限 300000）
+	MaxOutputBytes int    `json:"max_output_bytes"` // stdout 上限字节（缺省 1MB，上限 8MB）
 }
 
 // parseExecutionConfig 解析执行契约；缺失或非法直接报错（fail-closed：
@@ -99,6 +104,10 @@ func (h *Handler) executeToolInvocation(
 		return h.execRetrieverTool(cfg, args)
 	case "ledger", "audit-chain":
 		return h.execAuditTool(r, id, rec, invID, args)
+	case "script":
+		// WASM 脚本工具：wazero 内纯计算执行，无任何 host 能力（文件/网络），
+		// 固定只读；登记侧已强制 effect_class=READ（tool_executors_script.go）。
+		return h.execScriptTool(ctx, cfg, args)
 	case "mock-ocr":
 		return nil, errors.Ef(errors.CodeUnavailable,
 			"工具 %s 需要 OCR 后端（adapter=mock-ocr），当前平台未接入真实 OCR 服务；"+

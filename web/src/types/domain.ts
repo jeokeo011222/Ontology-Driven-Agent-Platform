@@ -791,6 +791,37 @@ export const EFFECT_CLASSES = ['READ', 'INTERNAL_WRITE', 'EXTERNAL_WRITE'] as co
 export type EffectClass = (typeof EFFECT_CLASSES)[number];
 
 /**
+ * 技能资产（registry.skills + registry.skill_versions）。
+ *
+ * 字段口径：`GET /api/v1/skills`、`GET /api/v1/skills/{id}` 的真实返回
+ * （internal/api/store/skill.go）。Agent 经 dependency_manifest.skills 依赖
+ * skill_key；计划编译时取最新已发布版本展开提示词片段与工具绑定。
+ */
+export interface SkillInfo {
+  id: string;
+  skill_key: string;
+  name: string;
+  domain: string;
+  description: string;
+  /** 技能级状态（registry.skills.status）：ACTIVE / INACTIVE / DELETED（软删） */
+  status: string;
+  /**
+   * 是否为平台内置技能。内置项**不可修改**：前端应隐藏编辑/发布/删除入口，
+   * 后端对 PATCH/DELETE/版本变更一律返回 409。
+   */
+  is_builtin: boolean;
+  latest_version_id: string | null;
+  latest_version: string | null;
+  latest_version_status: 'DRAFT' | 'PUBLISHED' | null;
+  /** 最新版本提示词片段（计划编译时以「## 技能：{name}」小节追加进 Agent 提示词） */
+  prompt_fragment: string | null;
+  /** 最新版本工具绑定（tool_key 列表，运行时并入本次运行可用工具集合） */
+  tool_bindings: string[] | null;
+  input_schema: unknown | null;
+  output_schema: unknown | null;
+}
+
+/**
  * 插件式工作流资产（registry.workflows + registry.workflow_versions）。
  *
  * 字段口径：`GET /api/v1/workflows` 的真实返回（internal/api/store/workflow_store.go

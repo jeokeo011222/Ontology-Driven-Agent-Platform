@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	stderrors "errors"
+	"io"
 	"net/http"
 
 	"odap/internal/api/sse"
@@ -21,6 +22,33 @@ type createToolRequest struct {
 	OutputSchema json.RawMessage `json:"output_schema"`
 	Capabilities []string        `json:"capabilities,omitempty"`
 	EffectClass  string          `json:"effect_class,omitempty"`
+	// ExecutionConfig 是首个版本的执行契约（adapter=script 时为 WASM 脚本工具）。
+	// 仅用户自建工具可携带；内置工具由数据集 seed 登记，不经本接口（store 层
+	// ensureToolMutable 对内置工具的修改一律 409）。
+	ExecutionConfig json.RawMessage `json:"execution_config,omitempty"`
+}
+
+// maxToolCreateBodyBytes 是新建工具的请求体上限：普通 JSON 端点为 1MB
+// （maxBodyBytes），但 adapter=script 允许携带 base64 编码的 .wasm 模块
+// （8MB 模块 → 约 10.7MB base64），放宽到 16MB，其余字段开销忽略不计。
+const maxToolCreateBodyBytes int64 = 16 << 20
+
+// decodeJSONLimit 与 decodeJSON 相同，但允许调用方指定请求体上限
+// （供携带大体积二进制载荷的端点使用）。
+func decodeJSONLimit(r *http.Request, dst any, maxBytes int64) error {
+	if r.Body == nil {
+		return errors.E(errors.CodeInvalidArgument, "请求体不能为空")
+	}
+	dec := json.NewDecoder(io.LimitReader(r.Body, maxBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		var maxErr *http.MaxBytesError
+		if stderrors.As(err, &maxErr) {
+			return errors.E(errors.CodeInvalidArgument, "请求体过大")
+		}
+		return errors.E(errors.CodeInvalidArgument, "请求体不是合法 JSON 或包含未知字段")
+	}
+	return nil
 }
 
 // ListTools 处理 GET /api/v1/tools（支持 ?effect_class= 过滤）。
@@ -58,19 +86,27 @@ func (h *Handler) CreateTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req createToolRequest
-	if err := decodeJSON(r, &req); err != nil {
+	if err := decodeJSONLimit(r, &req, maxToolCreateBodyBytes); err != nil {
 		h.fail(w, r, err)
 		return
 	}
 	echoIdempotency(w, r)
+	// 执行契约登记校验（fail-closed）：adapter=script 时强制 language=wasm、
+	// wasm_b64 合法（base64+魔数）、模块 ≤8MB、timeout/max_output 在界内、
+	// effect_class 必须为 READ（纯计算固定只读）。
+	if _, err := validateExecutionConfigForRegistration(req.ExecutionConfig, req.EffectClass); err != nil {
+		h.fail(w, r, err)
+		return
+	}
 	out, err := h.deps.Store.CreateTool(r.Context(), store.CreateToolInput{
-		ToolKey:      req.ToolKey,
-		Description:  req.Description,
-		Version:      req.Version,
-		InputSchema:  req.InputSchema,
-		OutputSchema: req.OutputSchema,
-		Capabilities: req.Capabilities,
-		EffectClass:  req.EffectClass,
+		ToolKey:         req.ToolKey,
+		Description:     req.Description,
+		Version:         req.Version,
+		InputSchema:     req.InputSchema,
+		OutputSchema:    req.OutputSchema,
+		Capabilities:    req.Capabilities,
+		EffectClass:     req.EffectClass,
+		ExecutionConfig: req.ExecutionConfig,
 	})
 	if err != nil {
 		h.fail(w, r, err)

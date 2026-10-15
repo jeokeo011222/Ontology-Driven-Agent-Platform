@@ -469,6 +469,15 @@ func (m *Manifest) validate() error {
 				continue
 			}
 			rel := m.relIndex[ref.Name]
+			// from 端同样必须吻合：ResolveTerm 按全局谓词名解析关系（先关系后属性），
+			// 任何类的实例都能解析到关系名。若不校验主体归属，模型把关系方向写反
+			// （在目标类一侧的实例上写出这条关系）只会在客体校验处得到一条难以自察
+			// 的报错，重生成回路也拿不到"方向错了"这个关键信号。
+			if rel.FromClass != in.Class {
+				return jsonPointer(fmt.Sprintf("instances/%d/properties", i), -1, key,
+					fmt.Sprintf("关系 %s 只能从类 %s 出发（from_class），但实例 %s 属于 %s（关系方向可能写反了：请在 from_class 对应的实例上使用该关系，或修正 relations 里的 from_class/to_class 声明）",
+						ref.Name, rel.FromClass, in.ID, in.Class))
+			}
 			for _, target := range asStringList(raw) {
 				targetClass, ok := m.instIndex[target]
 				if !ok {

@@ -102,6 +102,17 @@ func routes(h *handlers.Handler) []RouteSpec {
 		// 工具自动生成（读需求/制度文档 → 大模型 → DRAFT）
 		{http.MethodPost, "/api/v1/tools/generate", h.GenerateTool, false},
 
+		// Skill（一等 registry 资源；前端 PermissionGate 沿用 admin.agent.write/publish
+		// 权限键，与 Agent 管理同组；服务端与 agents/tools 一致走统一认证链）
+		{http.MethodGet, "/api/v1/skills", h.ListSkills, false},
+		{http.MethodPost, "/api/v1/skills", h.CreateSkill, false},
+		{http.MethodGet, "/api/v1/skills/{id}", h.GetSkill, false},
+		{http.MethodPatch, "/api/v1/skills/{id}", h.UpdateSkill, false},
+		{http.MethodDelete, "/api/v1/skills/{id}", h.DeleteSkill, false},
+		{http.MethodGet, "/api/v1/skills/{id}/versions", h.ListSkillVersions, false},
+		{http.MethodPost, "/api/v1/skills/{id}/versions", h.CreateSkillVersion, false},
+		{http.MethodPost, "/api/v1/skills/{id}/publish", h.PublishSkill, false},
+
 		// Workflow（插件式：plugin_kind='WORKFLOW'）
 		{http.MethodGet, "/api/v1/workflows", h.ListWorkflows, false},
 		{http.MethodPost, "/api/v1/workflows", h.CreateWorkflow, false},

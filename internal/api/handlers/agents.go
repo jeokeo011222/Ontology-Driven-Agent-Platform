@@ -17,6 +17,9 @@ type createAgentRequest struct {
 	Version      string          `json:"version,omitempty"`
 	InputSchema  json.RawMessage `json:"input_schema"`
 	OutputSchema json.RawMessage `json:"output_schema"`
+	// Skills 是绑定的技能键列表（写入 dependency_manifest.skills，
+	// 引用校验 fail-closed：技能必须存在且有 PUBLISHED 版本）。
+	Skills []string `json:"skills,omitempty"`
 }
 
 // ListAgents 处理 GET /api/v1/agents。
@@ -66,6 +69,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		Version:      req.Version,
 		InputSchema:  req.InputSchema,
 		OutputSchema: req.OutputSchema,
+		Skills:       req.Skills,
 	})
 	if err != nil {
 		h.fail(w, r, err)

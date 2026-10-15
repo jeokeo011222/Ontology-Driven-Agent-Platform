@@ -7,6 +7,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -26,10 +27,11 @@ func (s *Store) GetAgent(ctx context.Context, id ids.ID) (map[string]any, error)
 		rows, err := queryMaps(ctx, tx, `
             SELECT a.id::text AS id, a.agent_key, a.domain, a.description, a.status, a.is_builtin,
                    v.id::text AS latest_version_id, v.version AS latest_version,
-                   v.input_schema, v.output_schema, v.status AS latest_version_status
+                   v.input_schema::text, v.output_schema::text, v.status AS latest_version_status,
+                   v.dependency_manifest::text AS dependency_manifest
               FROM registry.agents a
               LEFT JOIN LATERAL (
-                  SELECT id, version, input_schema, output_schema, status
+                  SELECT id, version, input_schema, output_schema, status, dependency_manifest
                     FROM registry.agent_versions
                    WHERE agent_id = a.id ORDER BY created_at DESC LIMIT 1
               ) v ON TRUE
@@ -51,7 +53,11 @@ func (s *Store) GetAgent(ctx context.Context, id ids.ID) (map[string]any, error)
 
 // UpdateAgent 更新 Agent 的元数据（agent_key 不可变，版本升级走 publish）。
 // 平台内置智能体不可修改（409）。
-func (s *Store) UpdateAgent(ctx context.Context, id ids.ID, description, domain string) (map[string]any, error) {
+//
+// skills 非 nil 时为「绑定技能」的显式替换语义：写入最新版本的
+// dependency_manifest.skills（引用校验 fail-closed），并重算该版本
+// content_digest（digest 覆盖 dependencies，确保下游版本锁定随之失效）。
+func (s *Store) UpdateAgent(ctx context.Context, id ids.ID, description, domain string, skills *[]string) (map[string]any, error) {
 	out := map[string]any{}
 	err := s.TenantTx(ctx, func(tx pgx.Tx) error {
 		if err := ensureAgentMutable(ctx, tx, id); err != nil {
@@ -69,6 +75,11 @@ func (s *Store) UpdateAgent(ctx context.Context, id ids.ID, description, domain 
 		if tag.RowsAffected() == 0 {
 			return errors.E(errors.CodeNotFound, "Agent 不存在")
 		}
+		if skills != nil {
+			if err := updateAgentVersionSkills(ctx, tx, id, *skills); err != nil {
+				return err
+			}
+		}
 		rows, err := queryMaps(ctx, tx, `
             SELECT id::text AS id, agent_key, domain, description, status
               FROM registry.agents WHERE id = $1`, id.String())
@@ -82,6 +93,53 @@ func (s *Store) UpdateAgent(ctx context.Context, id ids.ID, description, domain 
 		return nil, err
 	}
 	return out, nil
+}
+
+// jsonText 把 queryMaps 归一化后的 jsonb 值（JSON 字符串）安全转回字节。
+// 空值按 SQL NULL 语义折为 'null'，保证 json.RawMessage 始终合法。
+func jsonText(v any) string {
+	s, ok := v.(string)
+	if !ok || s == "" {
+		return "null"
+	}
+	return s
+}
+
+// updateAgentVersionSkills 把最新版本的 dependency_manifest.skills 替换为给定
+// 列表并重算 content_digest。技能引用校验 fail-closed（404）。
+func updateAgentVersionSkills(ctx context.Context, tx pgx.Tx, agentID ids.ID, skills []string) error {
+	rows, err := queryMaps(ctx, tx, `
+        SELECT id::text AS version_id, version, input_schema::text AS input_schema,
+               output_schema::text AS output_schema, prompt_template::text AS prompt_template,
+               config::text AS config, dependency_manifest::text AS dependency_manifest
+          FROM registry.agent_versions
+         WHERE agent_id = $1
+         ORDER BY created_at DESC LIMIT 1`, agentID.String())
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return errors.E(errors.CodeNotFound, "Agent 不存在")
+	}
+	v := rows[0]
+	deps, err := mergeSkillDependencies(ctx, tx, []byte(jsonText(v["dependency_manifest"])), skills)
+	if err != nil {
+		return err
+	}
+	content, _ := json.Marshal(map[string]any{
+		"input":        json.RawMessage(jsonText(v["input_schema"])),
+		"output":       json.RawMessage(jsonText(v["output_schema"])),
+		"prompt":       json.RawMessage(jsonText(v["prompt_template"])),
+		"config":       json.RawMessage(jsonText(v["config"])),
+		"dependencies": json.RawMessage(deps),
+	})
+	if _, err := tx.Exec(ctx, `
+        UPDATE registry.agent_versions
+           SET dependency_manifest = $2::jsonb, content_digest = $3
+         WHERE id = $1`, jsonText(v["version_id"]), string(deps), digestBytes(content)); err != nil {
+		return errors.Wrap(err, errors.CodeInternal, "更新 Agent 依赖清单失败")
+	}
+	return nil
 }
 
 // DeleteAgent 软删除 Agent（status → DELETED）。平台内置智能体不可删除（409）。

@@ -13,11 +13,31 @@ export function useTools(filters: ListQueryFilters = {}) {
 }
 
 /**
+ * 脚本执行契约（execution_config，adapter=script）。
+ *
+ * WASM 脚本在服务端 wazero 运行时内纯计算执行：无网络、无文件访问、固定只读，
+ * 因此 effect_class 必须为 READ（服务端登记校验强制）。wasm_b64 是 .wasm 模块的
+ * base64 编码（解码后上限 8MB）。
+ */
+export interface ScriptExecutionConfig {
+  adapter: 'script';
+  language: 'wasm';
+  wasm_b64: string;
+  /** 运行超时毫秒，缺省 30000，上限 300000。 */
+  timeout_ms?: number;
+  /** stdout 输出上限字节，缺省 1MB，上限 8MB；超限直接报错（不静默截断）。 */
+  max_output_bytes?: number;
+}
+
+/**
  * `POST /api/v1/tools` 的请求体。
  *
  * `input_schema` / `output_schema` **必填且必须是合法 JSON**：服务端
  * `store.CreateTool` 以 `json.Valid` 校验，缺省（nil）会被拒绝为
  * INVALID_ARGUMENT。因此调用方必须始终传入合法 JSON（至少 `{}`）。
+ *
+ * `execution_config` 可选：携带 adapter=script 的执行契约时，首个版本直接以
+ * PUBLISHED 登记（平台无工具版本发布链路，InvokeTool 只放行 PUBLISHED）。
  */
 export interface CreateToolBody {
   tool_key: string;
@@ -27,6 +47,7 @@ export interface CreateToolBody {
   output_schema: unknown;
   capabilities?: string[];
   effect_class?: EffectClass;
+  execution_config?: ScriptExecutionConfig;
 }
 
 /** `PATCH /api/v1/tools/{id}` 的请求体（tool_key 与副作用等级不可变）。 */
@@ -124,28 +145,6 @@ export function useInvokeTool() {
     onSuccess: (_data, variables) => {
       void qc.invalidateQueries({ queryKey: ['tools', variables.id, 'invocations'] });
     },
-  });
-}
-
-export interface ToolInvocationFilters {
-  status?: string;
-  cursor?: string;
-}
-
-/** 调用记录（cursor 分页，默认 10 行/页 + ?status= 筛选）。 */
-export function useToolInvocations(toolId: string | null, filters: ToolInvocationFilters) {
-  return useQuery({
-    queryKey: ['tools', toolId, 'invocations', filters],
-    queryFn: () =>
-      fetchList<ToolInvocation>(
-        `/tools/${encodeURIComponent(toolId as string)}/invocations`,
-        {
-          limit: 10,
-          status: filters.status || undefined,
-          cursor: filters.cursor || undefined,
-        },
-      ),
-    enabled: toolId !== null && toolId !== '',
   });
 }
 

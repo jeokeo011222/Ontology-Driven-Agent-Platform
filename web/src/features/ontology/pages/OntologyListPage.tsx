@@ -199,11 +199,33 @@ export function OntologyListPage() {
       header: '本体状态',
       tight: true,
       render: (item) => {
+        const active = isRowActive(item);
         const meta = ontologyStatusBadge(item.status, '本体列表.本体状态');
+        const title =
+          item.status === 'ACTIVE'
+            ? '启用中：点击停用该本体，停用后不再用于新的运行'
+            : item.status === 'ARCHIVED'
+              ? '已归档：点击启用该本体'
+              : '已停用：点击启用该本体';
         return (
-          <Badge tone={meta.tone} title={meta.title}>
-            {meta.label}
-          </Badge>
+          <PermissionGate
+            permission="admin.ontology.write"
+            fallback={
+              <Badge tone={meta.tone} title={meta.title}>
+                {meta.label}
+              </Badge>
+            }>
+            <Button
+              size="sm"
+              variant="ghost"
+              iconOnly
+              icon={active ? 'pause' : 'play'}
+              aria-label={title}
+              title={title}
+              style={active ? { color: 'var(--color-success)' } : undefined}
+              onClick={() => openToggle(item)}
+            />
+          </PermissionGate>
         );
       },
     },
@@ -221,16 +243,6 @@ export function OntologyListPage() {
           <Link className="btn btn--secondary btn--sm" to={`/admin/ontologies/${item.id}`}>
             打开工作台
           </Link>
-          {/* 启停：ACTIVE 显示「停用」，其余（已停用/已归档）显示「启用」。 */}
-          <PermissionGate permission="admin.ontology.write">
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => openToggle(item)}
-              title={isRowActive(item) ? '停用该本体，停用后不再用于新的运行' : '重新启用该本体'}>
-              {isRowActive(item) ? '停用' : '启用'}
-            </Button>
-          </PermissionGate>
         </div>
       ),
     },

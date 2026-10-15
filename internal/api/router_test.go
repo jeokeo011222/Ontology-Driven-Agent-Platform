@@ -64,6 +64,15 @@ var contractEndpoints = []string{
 	"POST /api/v1/tools/{id}/invocations/{inv_id}/approve",
 	"POST /api/v1/tools/{id}/invocations/{inv_id}/reject",
 	"POST /api/v1/tools/generate",
+	// Skill（一等 registry 资源）
+	"GET /api/v1/skills",
+	"POST /api/v1/skills",
+	"GET /api/v1/skills/{id}",
+	"PATCH /api/v1/skills/{id}",
+	"DELETE /api/v1/skills/{id}",
+	"GET /api/v1/skills/{id}/versions",
+	"POST /api/v1/skills/{id}/versions",
+	"POST /api/v1/skills/{id}/publish",
 	// Workflow（插件式）
 	"GET /api/v1/workflows",
 	"POST /api/v1/workflows",

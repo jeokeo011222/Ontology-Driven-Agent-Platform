@@ -45,6 +45,8 @@ func (h *Handler) GetAgent(w http.ResponseWriter, r *http.Request) {
 type updateAgentRequest struct {
 	Description string `json:"description,omitempty"`
 	Domain      string `json:"domain,omitempty"`
+	// Skills 为指针以区分「未提供」（nil，不改动）与「清空绑定」（[]）。
+	Skills *[]string `json:"skills,omitempty"`
 }
 
 // UpdateAgent 处理 PATCH /api/v1/agents/{id}。
@@ -69,7 +71,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	echoIdempotency(w, r)
-	out, err := h.deps.Store.UpdateAgent(r.Context(), agentID, req.Description, req.Domain)
+	out, err := h.deps.Store.UpdateAgent(r.Context(), agentID, req.Description, req.Domain, req.Skills)
 	if err != nil {
 		h.fail(w, r, err)
 		return

@@ -45,6 +45,7 @@ const NAV_GROUPS: SidenavGroup[] = [
       // 故此处不再有独立的分类导航项。
       { to: '/admin/ontologies', label: '企业本体', icon: 'ontology' },
       { to: '/admin/agents', label: 'Agent 管理', icon: 'bot' },
+      { to: '/admin/skills', label: '技能管理', icon: 'sparkles' },
       { to: '/admin/tools', label: '工具管理', icon: 'wrench' },
       { to: '/admin/workflows', label: '工作流与 Harness', icon: 'workflow' },
     ],

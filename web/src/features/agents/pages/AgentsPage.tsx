@@ -10,6 +10,8 @@ import { ListFilterBar, FILTER_ALL_OPTION } from '@/components/list-filter-bar';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import type { AgentInfo } from '@/types';
 import {
+  parseAgentSkills,
+  useAgentDetail,
   useAgents,
   useCreateAgent,
   useDeleteAgent,
@@ -17,6 +19,7 @@ import {
   usePublishAgent,
   useUpdateAgent,
 } from '../api';
+import { useSkillOptions } from '@/features/skills/api';
 import { Icon } from '@/components/icon';
 
 /**
@@ -52,6 +55,56 @@ const STATUS_OPTIONS = [
   { value: 'DELETED', label: '已删除' },
 ];
 
+/**
+ * 「绑定技能」多选（真实 GET /skills 数据：最新版本已发布的技能）。
+ * 数据源禁止硬编码；只有 PUBLISHED 版本才能被 Agent 依赖（服务端 fail-closed，
+ * 引用未发布技能在创建/编辑时会被 404 拒绝）。
+ */
+function SkillBindingPicker({
+  options,
+  selected,
+  onChange,
+  loading,
+}: {
+  options: { skill_key: string; name: string }[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+  loading: boolean;
+}) {
+  const toggle = (skillKey: string) => {
+    onChange(selected.includes(skillKey) ? selected.filter((k) => k !== skillKey) : [...selected, skillKey]);
+  };
+  if (loading) {
+    return <p className="text-sm muted">正在加载可绑定技能…</p>;
+  }
+  if (options.length === 0) {
+    return <p className="text-sm muted">暂无已发布技能可绑定。请先在「技能管理」创建并发布技能。</p>;
+  }
+  return (
+    <div
+      role="group"
+      aria-label="绑定技能"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+        maxHeight: 168,
+        overflowY: 'auto',
+        border: '1px solid var(--color-border)',
+        borderRadius: 8,
+        padding: 8,
+      }}>
+      {options.map((skill) => (
+        <label key={skill.skill_key} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+          <input type="checkbox" checked={selected.includes(skill.skill_key)} onChange={() => toggle(skill.skill_key)} />
+          <span className="mono text-sm">{skill.skill_key}</span>
+          <span className="text-xs muted">{skill.name}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
 export function AgentsPage() {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
@@ -72,10 +125,19 @@ export function AgentsPage() {
     input_schema: '{}',
     output_schema: '{}',
   });
+  const [createSkills, setCreateSkills] = useState<string[]>([]);
   const [createErr, setCreateErr] = useState<string | null>(null);
 
   const [editTarget, setEditTarget] = useState<AgentInfo | null>(null);
   const [editForm, setEditForm] = useState({ domain: '', description: '' });
+  const [editSkills, setEditSkills] = useState<string[]>([]);
+  // 编辑弹窗的绑定技能初始值来自 Agent 详情的 dependency_manifest.skills（真实数据源）。
+  const detail = useAgentDetail(editTarget?.id ?? null);
+  useEffect(() => {
+    if (detail.data) {
+      setEditSkills(parseAgentSkills(detail.data));
+    }
+  }, [detail.data]);
 
   const [deleteTarget, setDeleteTarget] = useState<AgentInfo | null>(null);
 
@@ -90,6 +152,9 @@ export function AgentsPage() {
   });
 
   const generated = generate.data;
+  // 「绑定技能」选项：真实 GET /skills 中最新版本已发布的技能（禁止硬编码）。
+  const skillOptions = useSkillOptions();
+  const skillOptionList = skillOptions.data?.items ?? [];
 
   // 筛选条件变化必须回到首页：否则会带着旧页游标去请求新筛选结果（假结果）。
   useEffect(() => {
@@ -127,11 +192,13 @@ export function AgentsPage() {
         output_schema: outputSchema,
         ...(createForm.description.trim() ? { description: createForm.description.trim() } : {}),
         ...(createForm.version.trim() ? { version: createForm.version.trim() } : {}),
+        ...(createSkills.length ? { skills: createSkills } : {}),
       },
       {
         onSuccess: () => {
           setCreateOpen(false);
           setCreateForm({ agent_key: '', domain: '', description: '', version: '', input_schema: '{}', output_schema: '{}' });
+          setCreateSkills([]);
         },
       },
     );
@@ -145,6 +212,8 @@ export function AgentsPage() {
         body: {
           ...(editForm.domain.trim() ? { domain: editForm.domain.trim() } : {}),
           ...(editForm.description.trim() ? { description: editForm.description.trim() } : {}),
+          // 绑定技能为显式替换语义：整体提交当前勾选（[] 表示清空绑定）。
+          skills: editSkills,
         },
       },
       { onSuccess: () => setEditTarget(null) },
@@ -234,32 +303,46 @@ export function AgentsPage() {
         ) : item.status === 'DELETED' ? (
           <span className="muted text-sm">已删除</span>
         ) : (
-          <div className="row">
+          <div className="row" style={{ gap: 4 }}>
             <PermissionGate permission="admin.agent.write">
-              <Button variant="ghost" size="sm" icon="pencil" onClick={() => openEdit(item)}>
-                编辑
-              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                iconOnly
+                icon="pencil"
+                aria-label="编辑"
+                title="编辑业务域与说明"
+                onClick={() => openEdit(item)}
+              />
             </PermissionGate>
             <PermissionGate permission="admin.agent.publish">
               <Button
-                variant="primary"
+                variant="ghost"
                 size="sm"
+                iconOnly
+                icon="rocket"
+                aria-label={item.latest_version_status === 'PUBLISHED' ? '已发布' : '发布'}
+                title={
+                  item.latest_version_status === 'PUBLISHED'
+                    ? '当前版本已发布'
+                    : '发布当前版本（须通过校验与质量门禁）'
+                }
                 disabled={item.latest_version_status === 'PUBLISHED'}
                 loading={publish.isPending && publish.variables === item.id}
                 onClick={() => publish.mutate(item.id)}
-                icon="rocket">
-                发布
-              </Button>
+              />
             </PermissionGate>
             <PermissionGate permission="admin.agent.write">
               <Button
                 variant="ghost"
                 size="sm"
+                iconOnly
                 icon="ban"
+                aria-label="删除"
+                title="删除（软删除，审计链完整保留）"
                 loading={remove.isPending && remove.variables === item.id}
-                onClick={() => setDeleteTarget(item)}>
-                删除
-              </Button>
+                onClick={() => setDeleteTarget(item)}
+              />
             </PermissionGate>
           </div>
         ),
@@ -393,6 +476,16 @@ export function AgentsPage() {
               rows={4}
             />
           </Field>
+          <Field
+            label="绑定技能（skills）"
+            hint="写入依赖清单 dependency_manifest.skills；仅可选最新版本已发布的技能（真实列表）。计划编译时展开技能提示词与工具绑定。">
+            <SkillBindingPicker
+              options={skillOptionList}
+              selected={createSkills}
+              onChange={setCreateSkills}
+              loading={skillOptions.isLoading}
+            />
+          </Field>
           <div className="dialog-actions">
             <Button type="button" variant="ghost" onClick={() => setCreateOpen(false)}>
               取消
@@ -430,6 +523,16 @@ export function AgentsPage() {
           </Field>
           <Field label="说明">
             <Textarea value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })} />
+          </Field>
+          <Field
+            label="绑定技能（skills）"
+            hint="保存时整体替换依赖清单中的技能绑定；仅可选最新版本已发布的技能。">
+            <SkillBindingPicker
+              options={skillOptionList}
+              selected={editSkills}
+              onChange={setEditSkills}
+              loading={skillOptions.isLoading || detail.isLoading}
+            />
           </Field>
           <div className="dialog-actions">
             <Button type="button" variant="ghost" onClick={() => setEditTarget(null)}>

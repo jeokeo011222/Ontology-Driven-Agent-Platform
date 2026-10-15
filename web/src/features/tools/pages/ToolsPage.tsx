@@ -5,7 +5,7 @@ import { ModelSelect } from '@/components/model-select';
 import { DataTable, type DataTableColumn } from '@/components/data-table';
 import { ErrorState } from '@/components/error-state';
 import { PermissionGate } from '@/components/permission-gate';
-import { MetaBadge, versionStatusBadge, type BadgeMeta } from '@/components/status-badge';
+import { MetaBadge, type BadgeMeta } from '@/components/status-badge';
 import { ListFilterBar, FILTER_ALL_OPTION } from '@/components/list-filter-bar';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import { EFFECT_CLASSES, type EffectClass, type ToolInfo } from '@/types';
@@ -16,10 +16,10 @@ import {
   useGenerateTool,
   useInvokeTool,
   useRejectToolInvocation,
-  useToolInvocations,
   useTools,
   useUpdateTool,
   type InvokeToolResponse,
+  type ScriptExecutionConfig,
   type ToolInvocation,
 } from '../api';
 import { Icon } from '@/components/icon';
@@ -48,6 +48,51 @@ const EFFECT_META: Record<EffectClass, BadgeMeta> = {
 
 const EFFECT_OPTIONS = EFFECT_CLASSES.map((value) => ({ value, label: value }));
 
+/** .wasm 模块大小上限（与后端登记校验一致：8MB）。 */
+const WASM_MAX_BYTES = 8 << 20;
+
+/** 新建工具弹窗的「脚本执行（WASM）」区块状态。 */
+interface CreateScriptState {
+  enabled: boolean;
+  fileName: string;
+  wasmB64: string;
+  timeoutMs: string;
+  maxOutputBytes: string;
+}
+
+const EMPTY_CREATE_SCRIPT: CreateScriptState = {
+  enabled: false,
+  fileName: '',
+  wasmB64: '',
+  timeoutMs: '',
+  maxOutputBytes: '',
+};
+
+/**
+ * 读取 .wasm 文件并 base64 编码（提交时随 execution_config 上送）。
+ * 服务端会校验 base64、\0asm 魔数与 8MB 上限，这里先做同等前置校验。
+ */
+function readWasmFile(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (file.size > WASM_MAX_BYTES) {
+      reject(new Error(`WASM 模块 ${(file.size / 1048576).toFixed(1)}MB 超过 8MB 上限`));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('读取 WASM 文件失败'));
+    reader.onload = () => {
+      const result = String(reader.result ?? '');
+      const idx = result.indexOf(',');
+      if (!result.startsWith('data:') || idx < 0) {
+        reject(new Error('WASM 文件读取结果异常'));
+        return;
+      }
+      resolve(result.slice(idx + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 /** 列表筛选状态词表（registry.tools.status 的真实取值集合，10 行/页）。 */
 const STATUS_OPTIONS = [
   FILTER_ALL_OPTION,
@@ -65,16 +110,6 @@ const INVOCATION_STATUS_META: Record<string, BadgeMeta> = {
   FAILED: { label: '失败', tone: 'error', title: '真实执行失败，错误信息已如实落库' },
   REJECTED: { label: '已驳回', tone: 'neutral', title: '审批驳回：该调用永不执行' },
 };
-
-const INVOCATION_STATUS_OPTIONS = [
-  { value: '', label: '全部状态' },
-  { value: 'PENDING_APPROVAL', label: '待审批' },
-  { value: 'APPROVED', label: '已批准' },
-  { value: 'EXECUTING', label: '执行中' },
-  { value: 'SUCCEEDED', label: '成功' },
-  { value: 'FAILED', label: '失败' },
-  { value: 'REJECTED', label: '已驳回' },
-];
 
 function invocationBadge(status: string) {
   const meta = INVOCATION_STATUS_META[status] ?? { label: status, tone: 'neutral' as const, title: status };
@@ -104,11 +139,11 @@ function prettyJSON(raw: string | null): string {
  *
  * 真实执行链（严禁 mock）：测试调用走 `POST /api/v1/tools/{id}/invoke`，
  * 服务端按 execution_config.adapter 派发真实执行器（ERP Port / docingest /
- * SHACL / 模型治理网关 / 审计哈希链），结果如实落 runtime.tool_invocations。
+ * SHACL / 模型治理网关 / 审计哈希链 / WASM 脚本 wazero），结果如实落
+ * runtime.tool_invocations。
  *   - READ / INTERNAL_WRITE：同步返回 200 + 终态记录（含真实输出或真实错误）；
- *   - EXTERNAL_WRITE：返回 202 + 待审批记录，需「审批确认」后才真实执行
- *     （审批驳回则永不执行）。
- * 调用记录区支持 10 行/页 + 状态筛选 + 审批操作（approval.decide 权限门禁）。
+ *   - EXTERNAL_WRITE：返回 202 + 待审批记录，在弹窗结果区内联「批准 / 驳回」
+ *     （approval.decide 权限门禁），批准后才真实执行，驳回则永不执行。
  *
  * 插件式设计（§7.2）：工具是插件式设计资产——新建 / 编辑 / 删除（软删）/
  * AI 自动生成 / 测试调用，全部对接后端已实现的 REST 端点。
@@ -134,6 +169,8 @@ export function ToolsPage() {
     input_schema: '{}',
     output_schema: '{}',
   });
+  // 可选「脚本执行（WASM）」区块：启用后随创建请求携带 execution_config。
+  const [createScript, setCreateScript] = useState<CreateScriptState>(EMPTY_CREATE_SCRIPT);
   const [createErr, setCreateErr] = useState<string | null>(null);
 
   const [editTarget, setEditTarget] = useState<ToolInfo | null>(null);
@@ -154,21 +191,10 @@ export function ToolsPage() {
   const [invokeArgs, setInvokeArgs] = useState('{}');
   const [invokeErr, setInvokeErr] = useState<string | null>(null);
 
-  // 调用记录区（10 行/页 + 状态筛选 + cursor 翻页 + 审批操作）。
-  const [invToolId, setInvToolId] = useState('');
-  const [invStatus, setInvStatus] = useState('');
-  const [invCursor, setInvCursor] = useState<string | null>(null);
-  const [invCursorStack, setInvCursorStack] = useState<(string | null)[]>([]);
+  // 审批动作（外部写入门禁）：在测试调用弹窗的 202 结果中内联完成批准 / 驳回。
   const [decisionTarget, setDecisionTarget] = useState<{ inv: ToolInvocation; approve: boolean } | null>(null);
-
-  const invocationsQuery = useToolInvocations(invToolId || null, { status: invStatus, cursor: invCursor ?? undefined });
   const approveInv = useApproveToolInvocation();
   const rejectInv = useRejectToolInvocation();
-
-  const resetInvPagination = () => {
-    setInvCursor(null);
-    setInvCursorStack([]);
-  };
 
   const generated = generate.data;
 
@@ -204,12 +230,42 @@ export function ToolsPage() {
       setCreateErr(`输入/输出 Schema 不是合法 JSON：${(e as Error).message}`);
       return;
     }
+    // 脚本执行（WASM）前置校验：与服务端登记校验同口径（fail-closed）。
+    let executionConfig: ScriptExecutionConfig | undefined;
+    if (createScript.enabled) {
+      if (createForm.effect_class !== 'READ') {
+        setCreateErr('脚本执行（WASM）工具固定只读：effect_class 必须为 READ（脚本纯计算、无网络/文件访问，不允许写副作用）。');
+        return;
+      }
+      if (!createScript.wasmB64) {
+        setCreateErr('已启用脚本执行但未选择 .wasm 模块文件。');
+        return;
+      }
+      const timeoutMs = Number(createScript.timeoutMs);
+      const maxOutputBytes = Number(createScript.maxOutputBytes);
+      if (createScript.timeoutMs && (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300000)) {
+        setCreateErr('超时（timeout_ms）必须是 1~300000 的整数毫秒。');
+        return;
+      }
+      if (createScript.maxOutputBytes && (!Number.isInteger(maxOutputBytes) || maxOutputBytes < 1 || maxOutputBytes > 8 << 20)) {
+        setCreateErr('输出上限（max_output_bytes）必须是 1~8388608 的整数字节。');
+        return;
+      }
+      executionConfig = {
+        adapter: 'script',
+        language: 'wasm',
+        wasm_b64: createScript.wasmB64,
+        ...(createScript.timeoutMs ? { timeout_ms: timeoutMs } : {}),
+        ...(createScript.maxOutputBytes ? { max_output_bytes: maxOutputBytes } : {}),
+      };
+    }
     create.mutate(
       {
         tool_key: createForm.tool_key.trim(),
         effect_class: createForm.effect_class,
         input_schema: inputSchema,
         output_schema: outputSchema,
+        ...(executionConfig ? { execution_config: executionConfig } : {}),
         ...(createForm.description.trim() ? { description: createForm.description.trim() } : {}),
         ...(createForm.version.trim() ? { version: createForm.version.trim() } : {}),
         ...(caps.length > 0 ? { capabilities: caps } : {}),
@@ -226,6 +282,7 @@ export function ToolsPage() {
             input_schema: '{}',
             output_schema: '{}',
           });
+          setCreateScript(EMPTY_CREATE_SCRIPT);
         },
       },
     );
@@ -278,109 +335,6 @@ export function ToolsPage() {
     invoke.mutate({ id: invokeTarget.id, body: { args } });
   };
 
-  const fmtTime = (raw: string | null) => (raw ? new Date(raw).toLocaleString() : '—');
-
-  const invocationColumns: DataTableColumn<ToolInvocation>[] = [
-    {
-      key: 'created_at',
-      header: '发起时间',
-      tight: true,
-      render: (inv) => (
-        <div>
-          <div className="text-sm">{fmtTime(inv.created_at)}</div>
-          <div className="text-xs muted mono copy-id">{inv.id}</div>
-        </div>
-      ),
-    },
-    {
-      key: 'tool_key',
-      header: '工具',
-      tight: true,
-      render: (inv) => <span className="mono text-sm">{inv.tool_key}</span>,
-    },
-    {
-      key: 'effect_class',
-      header: '副作用',
-      tight: true,
-      render: (inv) => <MetaBadge map={EFFECT_META} value={inv.effect_class} context="调用记录.副作用等级" />,
-    },
-    {
-      key: 'status',
-      header: '状态',
-      tight: true,
-      render: (inv) => invocationBadge(inv.status),
-    },
-    {
-      key: 'result',
-      header: '输出 / 错误',
-      render: (inv) => {
-        if (inv.status === 'SUCCEEDED' && inv.output_payload) {
-          return (
-            <details>
-              <summary className="text-sm" style={{ cursor: 'pointer' }}>
-                查看真实输出
-              </summary>
-              <pre className="mono text-xs" style={{ whiteSpace: 'pre-wrap', maxHeight: 240, overflow: 'auto' }}>
-                {prettyJSON(inv.output_payload)}
-              </pre>
-            </details>
-          );
-        }
-        if (inv.status === 'FAILED') {
-          return (
-            <div>
-              <Badge tone="error">{inv.error_code ?? 'ERROR'}</Badge>
-              <div className="text-xs" style={{ marginTop: 4 }}>
-                {inv.error_summary ?? '—'}
-              </div>
-            </div>
-          );
-        }
-        if (inv.status === 'PENDING_APPROVAL') {
-          return <span className="text-sm muted">等待审批确认后真实执行</span>;
-        }
-        if (inv.status === 'REJECTED') {
-          return <span className="text-sm muted">审批驳回{inv.error_summary ? `：${inv.error_summary}` : ''}</span>;
-        }
-        return <span className="text-sm muted">—</span>;
-      },
-    },
-    {
-      key: 'approve',
-      header: '审批',
-      tight: true,
-      render: (inv) => {
-        if (inv.status !== 'PENDING_APPROVAL') return <span className="muted text-sm">—</span>;
-        return (
-          <PermissionGate permission="approval.decide">
-            <div className="row" style={{ gap: 4 }}>
-              <Button
-                variant="primary"
-                size="sm"
-                icon="check"
-                loading={approveInv.isPending && approveInv.variables?.invId === inv.id}
-                onClick={() => {
-                  setDecisionTarget({ inv, approve: true });
-                }}>
-                批准
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                icon="ban"
-                loading={rejectInv.isPending && rejectInv.variables?.invId === inv.id}
-                onClick={() => {
-                  setDecisionTarget({ inv, approve: false });
-                }}>
-                驳回
-              </Button>
-            </div>
-          </PermissionGate>
-        );
-      },
-    },
-  ];
-
   const columns: DataTableColumn<ToolInfo>[] = [
     {
       key: 'tool_key',
@@ -415,15 +369,38 @@ export function ToolsPage() {
       render: (item) => <MetaBadge map={EFFECT_META} value={item.effect_class} context="工具副作用等级" />,
     },
     {
-      key: 'latest_version_status',
-      header: '版本状态',
+      // 测试功能列：替代原「版本状态」列。版本生命周期详情在编辑/工作台可见，
+      // 列表里测试调用才是高频动作，前置为独立列。
+      key: 'test',
+      header: '测试',
       tight: true,
       render: (item) => {
-        const meta = versionStatusBadge(item.latest_version_status, '工具列表.版本状态');
+        if (item.is_builtin || item.status === 'DELETED') {
+          return <span className="muted text-sm">—</span>;
+        }
+        const isExternalWrite = item.effect_class === 'EXTERNAL_WRITE';
         return (
-          <Badge tone={meta.tone} title={meta.title}>
-            {meta.label}
-          </Badge>
+          <PermissionGate permission="admin.tool.write">
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="play"
+              title={
+                isExternalWrite
+                  ? '外部写入工具：发起后进入待审批状态，审批确认后才真实执行'
+                  : '真实执行（结果如实落调用记录）'
+              }
+              onClick={() => {
+                setInvokeTarget(item);
+                setInvokeArgs('{}');
+                setInvokeErr(null);
+                invoke.reset();
+                approveInv.reset();
+                rejectInv.reset();
+              }}>
+              测试调用
+            </Button>
+          </PermissionGate>
         );
       },
     },
@@ -451,33 +428,11 @@ export function ToolsPage() {
           );
         }
         if (item.status === 'DELETED') return <span className="muted text-sm">已删除</span>;
-        const isExternalWrite = item.effect_class === 'EXTERNAL_WRITE';
         return (
           <div className="row">
             <PermissionGate permission="admin.tool.write">
               <Button variant="ghost" size="sm" icon="pencil" onClick={() => openEdit(item)}>
                 编辑
-              </Button>
-            </PermissionGate>
-            <PermissionGate permission="admin.tool.write">
-              <Button
-                variant="secondary"
-                size="sm"
-                icon="play"
-                title={
-                  isExternalWrite
-                    ? '外部写入工具：发起后进入待审批状态，审批确认后才真实执行'
-                    : '真实执行（结果如实落调用记录）'
-                }
-                onClick={() => {
-                  setInvokeTarget(item);
-                  setInvokeArgs('{}');
-                  setInvokeErr(null);
-                  invoke.reset();
-                  setInvToolId(item.id);
-                  resetInvPagination();
-                }}>
-                测试调用
               </Button>
             </PermissionGate>
             <PermissionGate permission="admin.tool.write">
@@ -552,85 +507,6 @@ export function ToolsPage() {
         onNextPage={() => pager.goNext(query.data?.next_cursor ?? null)}
       />
 
-      {/* 调用记录：10 行/页 + 状态筛选 + 审批操作 */}
-      <section className="section" style={{ marginTop: 24 }}>
-        <div className="row" style={{ justifyContent: 'space-between', marginBottom: 12 }}>
-          <h2 className="text-md" style={{ margin: 0 }}>
-            调用记录
-          </h2>
-          <div className="row" style={{ gap: 8 }}>
-            <Select
-              aria-label="选择工具"
-              value={invToolId}
-              options={[
-                { value: '', label: '选择工具…' },
-                ...(query.data?.items ?? []).map((t) => ({ value: t.id, label: t.tool_key })),
-              ]}
-              onChange={(e) => {
-                setInvToolId(e.target.value);
-                resetInvPagination();
-              }}
-              style={{ minWidth: 220 }}
-            />
-            <Select
-              aria-label="按状态筛选"
-              value={invStatus}
-              options={INVOCATION_STATUS_OPTIONS}
-              onChange={(e) => {
-                setInvStatus(e.target.value);
-                resetInvPagination();
-              }}
-              style={{ minWidth: 140 }}
-            />
-          </div>
-        </div>
-        {invToolId ? (
-          <>
-            <DataTable
-              caption="工具调用记录"
-              columns={invocationColumns}
-              rows={invocationsQuery.data?.items ?? []}
-              rowKey={(inv) => inv.id}
-              loading={invocationsQuery.isLoading}
-              error={invocationsQuery.error}
-              onRetry={() => void invocationsQuery.refetch()}
-              emptyTitle="该工具暂无调用记录"
-            />
-            <div className="row section" style={{ gap: 8 }}>
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={invCursorStack.length === 0}
-                onClick={() => {
-                  const stack = [...invCursorStack];
-                  const prev = stack.pop() ?? null;
-                  setInvCursorStack(stack);
-                  setInvCursor(prev);
-                }}>
-                上一页
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={!invocationsQuery.data?.next_cursor}
-                onClick={() => {
-                  const cur = invocationsQuery.data?.next_cursor;
-                  if (!cur) return;
-                  setInvCursorStack([...invCursorStack, invCursor]);
-                  setInvCursor(cur);
-                }}>
-                下一页
-              </Button>
-              <span className="text-xs muted">
-                每页 10 行；记录含真实输出与真实错误，审批操作受 approval.decide 权限控制。
-              </span>
-            </div>
-          </>
-        ) : (
-          <p className="text-sm muted">请选择一个工具以查看其真实调用记录（待审批的外部写入可在此审批）。</p>
-        )}
-      </section>
-
       {/* 新建工具 */}
       <Dialog open={createOpen} onClose={() => setCreateOpen(false)} title="新建工具">
         <form
@@ -677,6 +553,88 @@ export function ToolsPage() {
               rows={4}
             />
           </Field>
+          <fieldset
+            style={{
+              border: '1px solid var(--color-border, #ddd)',
+              borderRadius: 6,
+              padding: '12px',
+              margin: 0,
+            }}>
+            <legend>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={createScript.enabled}
+                  onChange={(e) => setCreateScript({ ...createScript, enabled: e.target.checked, wasmB64: e.target.checked ? createScript.wasmB64 : '' })}
+                />
+                <strong>脚本执行（WASM）</strong>
+              </label>
+            </legend>
+            <p className="text-sm" style={{ margin: '0 0 8px', color: 'var(--color-text-secondary, #666)' }}>
+              可选。登记后在 wazero 运行时内真实执行：脚本从 stdin 读 JSON 参数、向 stdout 写 JSON
+              对象输出。脚本是<strong>纯计算</strong>——无网络、无文件访问、无系统调用，固定
+              <strong>只读（effect_class 必须为 READ）</strong>。启用后首个版本直接发布（PUBLISHED）。
+            </p>
+            {createScript.enabled ? (
+              <>
+                <Field
+                  label="WASM 模块（.wasm）"
+                  required
+                  hint="≤8MB；前端 base64 编码后随 execution_config 上送，服务端校验 base64 与 \\0asm 魔数。">
+                  <input
+                    type="file"
+                    accept=".wasm"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) {
+                        setCreateScript({ ...createScript, fileName: '', wasmB64: '' });
+                        return;
+                      }
+                      readWasmFile(file)
+                        .then((b64) => setCreateScript({ ...createScript, fileName: file.name, wasmB64: b64 }))
+                        .catch((err: Error) => {
+                          setCreateErr(err.message);
+                          setCreateScript({ ...createScript, fileName: '', wasmB64: '' });
+                          e.target.value = '';
+                        });
+                    }}
+                  />
+                </Field>
+                {createScript.fileName ? (
+                  <p className="text-sm" style={{ margin: '0 0 8px' }}>
+                    已选择：{createScript.fileName}
+                    {`（base64 约 ${(Math.ceil((createScript.wasmB64.length * 3) / 4) / 1048576).toFixed(2)}MB 模块）`}
+                  </p>
+                ) : (
+                  <p className="text-sm" style={{ margin: '0 0 8px', color: 'var(--color-text-secondary, #666)' }}>
+                    尚未选择模块文件。
+                  </p>
+                )}
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                  <Field label="超时（timeout_ms）" hint="缺省 30000，上限 300000；超时强制终止并报错。">
+                    <Input
+                      type="number"
+                      min={1}
+                      max={300000}
+                      value={createScript.timeoutMs}
+                      placeholder="30000"
+                      onChange={(e) => setCreateScript({ ...createScript, timeoutMs: e.target.value })}
+                    />
+                  </Field>
+                  <Field label="输出上限（max_output_bytes）" hint="缺省 1MB，上限 8MB；超限直接报错，不静默截断。">
+                    <Input
+                      type="number"
+                      min={1}
+                      max={8388608}
+                      value={createScript.maxOutputBytes}
+                      placeholder="1048576"
+                      onChange={(e) => setCreateScript({ ...createScript, maxOutputBytes: e.target.value })}
+                    />
+                  </Field>
+                </div>
+              </>
+            ) : null}
+          </fieldset>
           <div className="dialog-actions">
             <Button type="button" variant="ghost" onClick={() => setCreateOpen(false)}>
               取消
@@ -854,14 +812,17 @@ export function ToolsPage() {
           {invoke.isSuccess && invoke.data ? (
             (() => {
               const res = invoke.data as InvokeToolResponse;
-              const inv = res.invocation;
+              // 审批决定后服务端返回决定后的调用终态：优先展示真实结果。
+              const decided = approveInv.data ?? rejectInv.data ?? null;
+              const inv = decided ? decided.invocation : res.invocation;
+              const msg = decided ? decided.message : res.message;
               return (
                 <div style={{ marginTop: 8 }}>
                   <div className="row" style={{ gap: 8 }}>
                     {invocationBadge(inv.status)}
-                    <span className="text-sm muted">调用记录 {inv.id}</span>
+                    <span className="text-sm muted">调用 ID {inv.id}</span>
                   </div>
-                  {res.message ? <p className="text-sm muted" style={{ marginTop: 4 }}>{res.message}</p> : null}
+                  {msg ? <p className="text-sm muted" style={{ marginTop: 4 }}>{msg}</p> : null}
                   {inv.status === 'FAILED' ? (
                     <p className="text-sm" style={{ color: 'var(--color-error)', marginTop: 4 }}>
                       {inv.error_code ?? 'ERROR'}：{inv.error_summary ?? '—'}
@@ -872,9 +833,28 @@ export function ToolsPage() {
                       {prettyJSON(inv.output_payload)}
                     </pre>
                   ) : null}
-                  <p className="text-xs muted" style={{ marginTop: 4 }}>
-                    完整调用记录见下方「调用记录」区块。
-                  </p>
+                  {inv.status === 'PENDING_APPROVAL' ? (
+                    <PermissionGate permission="approval.decide">
+                      <div className="row" style={{ gap: 8, marginTop: 8 }}>
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          icon="check"
+                          loading={approveInv.isPending}
+                          onClick={() => setDecisionTarget({ inv, approve: true })}>
+                          批准并执行
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          icon="ban"
+                          loading={rejectInv.isPending}
+                          onClick={() => setDecisionTarget({ inv, approve: false })}>
+                          驳回
+                        </Button>
+                      </div>
+                    </PermissionGate>
+                  ) : null}
                 </div>
               );
             })()
@@ -893,16 +873,17 @@ export function ToolsPage() {
             ? '批准后服务端将携带审批凭据真实执行该调用并触达外部系统（CAS 状态守卫，不会重复执行）。'
             : '驳回后该调用永不执行；驳回原因将写入调用记录与审计。'
         }
+        busy={approveInv.isPending || rejectInv.isPending}
+        error={approveInv.error ?? rejectInv.error}
         onCancel={() => setDecisionTarget(null)}
         onConfirm={() => {
           if (!decisionTarget) return;
           const { inv, approve } = decisionTarget;
           if (approve) {
-            approveInv.mutate({ toolId: inv.tool_id, invId: inv.id });
+            approveInv.mutate({ toolId: inv.tool_id, invId: inv.id }, { onSuccess: () => setDecisionTarget(null) });
           } else {
-            rejectInv.mutate({ toolId: inv.tool_id, invId: inv.id });
+            rejectInv.mutate({ toolId: inv.tool_id, invId: inv.id }, { onSuccess: () => setDecisionTarget(null) });
           }
-          setDecisionTarget(null);
         }}
       />
     </div>

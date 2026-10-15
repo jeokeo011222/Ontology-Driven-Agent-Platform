@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"odap/internal/llm"
 	"odap/internal/platform/errors"
@@ -147,7 +148,17 @@ func draftToPlan(d planDraft, tenantID ids.ID, intent Intent) Plan {
 }
 
 func buildUserPrompt(intent Intent) string {
-	const prefix = "业务域："
-	const sep = "\n用户诉求："
-	return prefix + intent.Domain + sep + intent.Utterance
+	var b strings.Builder
+	b.WriteString("业务域：")
+	b.WriteString(intent.Domain)
+	b.WriteString("\n用户诉求：")
+	b.WriteString(intent.Utterance)
+	// 工具白名单进计划：AllowedTools 是本次运行可用工具的完整集合
+	// （manifest.tools + 技能 tool_bindings 并集，见 skills.go 的
+	// SkillExpansion.MergeToolKeys）。Planner 只能从中选择，不得编造工具键。
+	if len(intent.AllowedTools) > 0 {
+		b.WriteString("\n可用工具（只允许从下列工具中选择，不得编造工具键）：")
+		b.WriteString("\n" + strings.Join(intent.AllowedTools, ", "))
+	}
+	return b.String()
 }

@@ -17,6 +17,7 @@ import { OntologyDetailPage } from '@/features/ontology/pages/OntologyDetailPage
 import { DataMappingPage } from '@/features/data-mapping/pages/DataMappingPage';
 import { AgentsPage } from '@/features/agents/pages/AgentsPage';
 import { ToolsPage } from '@/features/tools/pages/ToolsPage';
+import { SkillsPage } from '@/features/skills/pages/SkillsPage';
 import { WorkflowsPage } from '@/features/workflows/pages/WorkflowsPage';
 import { ModelsPage } from '@/features/llm-providers/pages/ModelsPage';
 import { ConnectorsPage } from '@/features/erp-connectors/pages/ConnectorsPage';
@@ -82,6 +83,8 @@ export const router = createBrowserRouter([
       { path: 'ontologies/:id', element: guarded(<OntologyDetailPage />, 'admin.ontology.read') },
       { path: 'data-sources', element: guarded(<DataMappingPage />, 'admin.data-source.read') },
       { path: 'agents', element: guarded(<AgentsPage />, 'admin.agent.read') },
+      // 技能管理沿用 admin.agent.* 权限键（与 Agent 管理同组；服务端不改 RBAC 种子）
+      { path: 'skills', element: guarded(<SkillsPage />, 'admin.agent.read') },
       { path: 'tools', element: guarded(<ToolsPage />, 'admin.tool.read') },
       { path: 'workflows', element: guarded(<WorkflowsPage />, 'admin.workflow.read') },
       { path: 'models', element: guarded(<ModelsPage />, 'admin.model.read') },

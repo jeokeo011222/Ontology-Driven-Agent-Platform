@@ -26,6 +26,8 @@ tags:
   - name: Ontologies
   - name: Plugins
   - name: Tools
+  - name: Skills
+    description: Skill Registry（技能作为一等 registry 资源，Agent 经 dependency_manifest.skills 依赖）
   - name: Policies
   - name: Approvals
   - name: ERP
@@ -1239,6 +1241,211 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/skills:
+    get:
+      tags: [Skills]
+      summary: 查询技能列表
+      operationId: listSkills
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          required: false
+          description: 状态筛选（ACTIVE/INACTIVE/DELETED；不传则不含已软删项）
+          schema: { type: string }
+        - name: q
+          in: query
+          required: false
+          description: 关键字检索（skill_key / 名称 / 说明）
+          schema: { type: string }
+      responses:
+        "200":
+          description: 技能列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Skill" }
+                  next_cursor: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Skills]
+      summary: 创建技能（含首个 DRAFT 版本）
+      operationId: createSkill
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSkillRequest"
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedResource" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/skills/{id}:
+    get:
+      tags: [Skills]
+      summary: 查询单个技能（含最新版本详情）
+      operationId: getSkill
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: 技能详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Skill" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    patch:
+      tags: [Skills]
+      summary: 更新技能元数据（PATCH 语义，空缺不改动；skill_key 不可变）
+      operationId: updateSkill
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSkillRequest"
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Skill" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    delete:
+      tags: [Skills]
+      summary: 删除技能（软删 status=DELETED；内置技能 409）
+      operationId: deleteSkill
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: 已删除（软删）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, enum: [DELETED] }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/skills/{id}/versions:
+    get:
+      tags: [Skills]
+      summary: 查询技能版本历史（按创建时间倒序）
+      operationId: listSkillVersions
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: 技能版本列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/SkillVersion" }
+                  next_cursor: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Skills]
+      summary: 追加技能版本（DRAFT；发布走 /publish）
+      operationId: createSkillVersion
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSkillVersionRequest"
+      responses:
+        "201":
+          description: 已创建 DRAFT 版本
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedResource" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/skills/{id}/publish:
+    post:
+      tags: [Skills]
+      summary: 发布技能（最新版本 DRAFT→PUBLISHED；缺失/非法状态一律 409，fail-closed）
+      operationId: publishSkill
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: 已发布
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SkillPublishResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
 
   /api/v1/workflows:
     get:
@@ -3374,6 +3581,7 @@ components:
         ontology_key: { type: string }
         plugin_key: { type: string }
         tool_key: { type: string }
+        skill_key: { type: string }
         policy_key: { type: string }
         version_id: { type: string, format: uuid }
         version: { type: string }
@@ -3404,6 +3612,12 @@ components:
         version: { type: string }
         input_schema: { type: object, additionalProperties: true }
         output_schema: { type: object, additionalProperties: true }
+        skills:
+          type: array
+          description: |
+            绑定的技能键列表（写入 dependency_manifest.skills）。fail-closed：
+            任一 skill_key 不存在或没有 PUBLISHED 版本 → 404，整单拒绝。
+          items: { type: string }
 
     Ontology:
       type: object
@@ -3725,6 +3939,91 @@ components:
         output_schema: { type: object, additionalProperties: true }
         capabilities: { type: array, items: { type: string } }
         effect_class: { type: string, enum: [READ, EXTERNAL_WRITE, INTERNAL_WRITE] }
+
+    Skill:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        skill_key: { type: string }
+        name: { type: string }
+        domain: { type: string }
+        description: { type: string }
+        status: { type: string, enum: [ACTIVE, INACTIVE, DELETED] }
+        # 内置技能（平台自身能力）为 true；内置项 PATCH/DELETE/版本变更一律 409。
+        is_builtin: { type: boolean }
+        latest_version_id: { type: string, format: uuid, nullable: true }
+        latest_version: { type: string, nullable: true }
+        latest_version_status: { type: string, enum: [DRAFT, PUBLISHED], nullable: true }
+        prompt_fragment: { type: string, nullable: true, description: 最新版本提示词片段（计划编译时追加进 Agent 提示词） }
+        tool_bindings:
+          type: array
+          nullable: true
+          description: 最新版本工具绑定（tool_key 列表，运行时并入可用工具集合）
+          items: { type: string }
+        input_schema: { type: object, additionalProperties: true, nullable: true }
+        output_schema: { type: object, additionalProperties: true, nullable: true }
+
+    SkillVersion:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        skill_id: { type: string, format: uuid }
+        version: { type: string }
+        prompt_fragment: { type: string }
+        tool_bindings: { type: array, items: { type: string } }
+        input_schema: { type: object, additionalProperties: true }
+        output_schema: { type: object, additionalProperties: true }
+        content_digest: { type: string, description: 版本内容摘要（纳入 Agent 计划的版本锁定） }
+        status: { type: string, enum: [DRAFT, PUBLISHED] }
+        created_at: { type: string, format: date-time }
+        published_at: { type: string, format: date-time, nullable: true }
+
+    CreateSkillRequest:
+      type: object
+      required: [skill_key, name]
+      properties:
+        skill_key: { type: string, description: 租户内唯一，创建后不可变 }
+        name: { type: string }
+        domain: { type: string }
+        description: { type: string }
+        version: { type: string, description: 首版本号，缺省 0.1.0 }
+        prompt_fragment: { type: string }
+        tool_bindings:
+          type: array
+          description: 工具绑定（tool_key 列表）；每个 key 必须指向 ACTIVE 工具，否则 404/409
+          items: { type: string }
+        input_schema: { type: object, additionalProperties: true }
+        output_schema: { type: object, additionalProperties: true }
+
+    UpdateSkillRequest:
+      type: object
+      description: PATCH 语义：字段缺省不改动；status 仅接受 ACTIVE/INACTIVE
+      properties:
+        name: { type: string }
+        description: { type: string }
+        domain: { type: string }
+        status: { type: string, enum: [ACTIVE, INACTIVE] }
+
+    CreateSkillVersionRequest:
+      type: object
+      required: [version]
+      properties:
+        version: { type: string, description: 版本号，不可与已有版本重复 }
+        prompt_fragment: { type: string }
+        tool_bindings:
+          type: array
+          description: 工具绑定（tool_key 列表）；每个 key 必须指向 ACTIVE 工具，否则 404/409
+          items: { type: string }
+        input_schema: { type: object, additionalProperties: true }
+        output_schema: { type: object, additionalProperties: true }
+
+    SkillPublishResult:
+      type: object
+      required: [skill_id, version_id, status]
+      properties:
+        skill_id: { type: string, format: uuid }
+        version_id: { type: string, format: uuid }
+        status: { type: string, enum: [PUBLISHED] }
 
     PolicyVersion:
       type: object
