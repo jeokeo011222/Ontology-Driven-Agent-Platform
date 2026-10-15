@@ -1,0 +1,27 @@
+# 独立 Mock ERP 镜像（第十六篇 §8.2 mockerp 服务；入口为 cmd/mock-erp）。
+FROM golang:1.23-bookworm AS build
+
+WORKDIR /src
+ENV GOFLAGS=-mod=mod \
+    GOPROXY=https://goproxy.cn,direct \
+    CGO_ENABLED=0
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN go build -trimpath -ldflags="-s -w" -o /out/mockerp ./cmd/mock-erp
+
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates tzdata \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd -u 10001 -m -s /usr/sbin/nologin app
+
+COPY --from=build /out/mockerp /usr/local/bin/mockerp
+
+USER app
+EXPOSE 8081
+
+ENTRYPOINT ["/usr/local/bin/mockerp"]

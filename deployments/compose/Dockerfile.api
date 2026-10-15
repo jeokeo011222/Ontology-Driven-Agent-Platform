@@ -1,0 +1,42 @@
+# ODAP API Server 镜像（第十六篇 §8.2 api 服务）。
+# 多阶段：golang 构建 → debian-slim 运行；CGO 关闭，产出静态二进制。
+FROM golang:1.23-bookworm AS build
+
+WORKDIR /src
+ENV GOFLAGS=-mod=mod \
+    GOPROXY=https://goproxy.cn,direct \
+    CGO_ENABLED=0
+
+# 先拉依赖以复用构建缓存
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api
+
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates tzdata \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd -u 10001 -m -s /usr/sbin/nologin app
+
+COPY --from=build /out/api /usr/local/bin/api
+
+# 制度文档语料（本体/Agent/工具/工作流自动生成的读取来源）。
+#
+# 为什么不 COPY 进镜像：.dockerignore 依据第十六篇 §8.2 有意排除 docs/（“避免把
+# 文档打进镜像”），设计文档也不属于运行期资产。语料改由 compose 以**只读 bind mount**
+# 挂载到 /app/docs/资料（见 compose.yaml 的 api.volumes），既可被生成端点读取，
+# 又不会增大镜像、也不会把设计文档带进生产镜像。
+#
+# 这里设 WORKDIR /app 并显式声明 ODAP_DOCS_ROOT，保证 handlers.docsRoot() 的默认
+# 相对路径 "docs/资料" 与挂载点一致：否则进程 CWD 为 "/"，默认路径会解析成
+# /docs/资料（不存在），生成端点会以 404“制度文档不存在”失败。
+WORKDIR /app
+ENV ODAP_DOCS_ROOT=/app/docs/资料
+
+USER app
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/local/bin/api"]

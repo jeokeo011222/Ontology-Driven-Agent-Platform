@@ -1,0 +1,38 @@
+# Build artifacts
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# `go build ./...` 会把各 main 包产物写到当前目录，逐个忽略（勿用宽泛通配）
+/api
+/worker
+/migrate
+/mock-erp
+/contract-lint
+
+# Frontend build output
+web/dist/
+
+# Dependencies
+web/node_modules/
+
+# Environment & secrets
+.env
+*.local
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local object store (OBJECT_STORE_MODE=local)
+.odap-objectstore/
+
+# 运行期产物：CI 构建二进制、浏览器缓存、截图（体积大且可再生，不入库）
+/artifacts/
+
+# 运行期上传与本地存储（用户上传的业务文档，属于实例数据不入库）
+/var/

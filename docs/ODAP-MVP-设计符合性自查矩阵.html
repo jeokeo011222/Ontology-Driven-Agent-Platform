@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>ODAP MVP 设计符合性自查矩阵与验证报告</title>
+<style>
+:root{--brand:#2457a7;--text:#172b4d;--text2:#667085;--bg:#f4f6f8;--surface:#fff;
+--success:#16803c;--warning:#b54708;--error:#b42318;--info:#175cd3;--border:#d7dce5;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-size:15px;line-height:1.7;
+font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 24px 64px;}
+h1{font-size:28px;margin:8px 0 4px;line-height:1.35}
+h2{font-size:21px;margin:36px 0 12px;padding-bottom:8px;border-bottom:2px solid var(--border)}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand)}
+h4{font-size:15px;margin:18px 0 6px}
+p{margin:8px 0}
+a{color:var(--brand)}
+code{background:#eef1f5;border:1px solid var(--border);border-radius:6px;
+padding:1px 6px;font-size:13px;font-family:ui-monospace,Consolas,Menlo,monospace;color:#26364f}
+pre{background:#0f172a;color:#e6edf7;padding:16px 18px;border-radius:10px;overflow:auto}
+pre code{background:none;border:none;color:inherit;padding:0;font-size:13px;line-height:1.6}
+table{border-collapse:collapse;width:100%;margin:14px 0;background:var(--surface);
+border-radius:10px;overflow:hidden;box-shadow:0 1px 3px rgba(23,43,77,.08);font-size:14px}
+th{background:#eef1f5;text-align:left;font-weight:600;padding:10px 12px;border-bottom:1px solid var(--border)}
+td{padding:9px 12px;border-bottom:1px solid #edf0f4;vertical-align:top}
+tr:last-child td{border-bottom:none}
+blockquote{margin:12px 0;padding:10px 16px;background:#e8eef8;border-left:4px solid var(--brand);
+border-radius:0 8px 8px 0;color:#26364f}
+hr{border:none;border-top:1px solid var(--border);margin:28px 0}
+ul,ol{margin:8px 0;padding-left:24px}
+li{margin:4px 0}
+</style>
+</head>
+<body><div class="wrap">
+<h1>ODAP MVP 设计符合性自查矩阵与验证报告</h1>
+<blockquote><strong>自查对象</strong>：<code>docs/</code> 下 18 份设计书（总书 + 第十七篇分册）+ <code>docs/contracts/01–04</code>（契约真源）+ <code>docs/adr/ADR-001–003、ADR-005</code><br/><strong>自查方式</strong>：逐模块对照设计要求 → 定位实现证据 → 以可复现命令实测验证<br/><strong>结论口径</strong>：只有"存在实现 + 有测试或实测证据"才算 ✅；仅文档/骨架算 🟡；未实现算 ⬜<br/><strong>生成时间</strong>：2026-10-13（2026-10-14 增补 ADR-005 行与 §ADR-005 检查项）</blockquote>
+<hr/>
+<h2>0. 证据等级定义</h2>
+<table><thead><tr><th>标记</th><th>含义</th><th>判定标准</th></tr></thead><tbody>
+<tr><td>✅ 已达成</td><td>实现存在且经<strong>实测</strong>验证</td><td>有单测/集成测试通过，或容器内实测输出</td></tr>
+<tr><td>🟡 部分达成</td><td>结构存在，MVP 范围内简化</td><td>骨架/子集实现，且设计书自身标注为 MVP 简化或 V1.5</td></tr>
+<tr><td>⬜ 未实现</td><td>本波次未交付</td><td>明确说明原因与影响面</td></tr>
+</tbody></table>
+<p><strong>证据类型</strong>：<code>[U]</code> 单元测试 · <code>[I]</code> 集成测试（真实 PostgreSQL）· <code>[M]</code> 实测命令输出 · <code>[C]</code> 契约门禁 · <code>[P]</code> 前端构建</p>
+<hr/>
+<h2>1. 交付物规模与总体验证结果</h2>
+<h3>1.1 代码规模</h3>
+<table><thead><tr><th>层</th><th>文件数</th><th>行数</th></tr></thead><tbody>
+<tr><td>Go（<code>internal/</code> + <code>cmd/</code> + <code>mockerp/</code> + <code>tools/</code>，含测试）</td><td>158</td><td>34,590</td></tr>
+<tr><td>└ 其中 Go 测试</td><td>51</td><td>10,694</td></tr>
+<tr><td>前端（<code>web/src/</code>，ts/tsx/css）</td><td>112</td><td>14,092</td></tr>
+<tr><td>└ 其中自研 SVG 图标集 <code>components/icon/icons.tsx</code></td><td>1</td><td>507（<strong>73 个图标</strong>）</td></tr>
+<tr><td>数据库迁移（<code>migrations/platform/</code> + <code>mockerp/migrations/</code>）</td><td>17 + 1</td><td>—</td></tr>
+<tr><td>设计书 / 契约 / ADR</td><td>19 + 4 + 3</td><td>—</td></tr>
+</tbody></table>
+<h3>1.2 总体门禁结果（全部实测）</h3>
+<table><thead><tr><th>门禁</th><th>命令</th><th>结果</th></tr></thead><tbody>
+<tr><td>格式</td><td><code>gofmt -l internal cmd mockerp tools</code></td><td>无输出 ✅</td></tr>
+<tr><td>编译</td><td><code>go build ./...</code></td><td>成功 ✅</td></tr>
+<tr><td>静态检查</td><td><code>go vet ./...</code></td><td>无告警 ✅</td></tr>
+<tr><td>单元测试</td><td><code>go test ./...</code></td><td>全部 <code>ok</code>，0 个 <code>FAIL</code> ✅</td></tr>
+<tr><td>集成测试</td><td><code>go test -tags integration ./internal/audit/... ./internal/execution/...</code>（以 <code>odap_app</code> 连接）</td><td>全部 <code>ok</code> ✅</td></tr>
+<tr><td>迁移回放</td><td>全新库按序回放 17 个平台迁移 + 1 个 Mock ERP 迁移</td><td>全部成功 ✅</td></tr>
+<tr><td>契约门禁</td><td><code>go run ./tools/contract-lint -root .</code></td><td>7 项检查全绿 ✅</td></tr>
+<tr><td>前端构建</td><td><code>cd web &amp;&amp; npm run build</code>（含 <code>tsc --noEmit</code>）</td><td>成功，188 modules ✅</td></tr>
+<tr><td>Compose</td><td><code>docker compose --env-file .env config</code></td><td>8 默认服务 + 2 profile 服务 ✅</td></tr>
+<tr><td><strong>启动</strong></td><td><code>docker compose --env-file .env up -d --build</code></td><td><strong>6 个常驻服务全部 Up（<code>postgres</code>/<code>mockerp-db</code> 为 healthy）；2 个迁移 job <code>Exited(0)</code></strong> ✅</td></tr>
+</tbody></table>
+<h3>1.3 运行时端到端实测（真实进程 + 真实 PostgreSQL）</h3>
+<p>启动 <code>cmd/api</code> 与 <code>cmd/worker</code>（连接测试库，应用角色 <code>odap_app</code>）后实测：</p>
+<table><thead><tr><th>请求</th><th>期望</th><th>实测</th></tr></thead><tbody>
+<tr><td><code>GET /healthz</code></td><td>200</td><td>200 <code>{"service":"api","status":"ok",...}</code></td></tr>
+<tr><td><code>GET /readyz</code></td><td>200</td><td>200</td></tr>
+<tr><td><code>GET /api/v1/runs</code>（带身份）</td><td>200 + cursor 结构</td><td>200 <code>{"items":[],"next_cursor":""}</code></td></tr>
+<tr><td><code>GET /api/v1/runs</code>（无身份）</td><td>401</td><td><strong>401</strong>，响应体严格符合 contracts/02 §4</td></tr>
+<tr><td><code>GET /api/v1/runs/{id}</code>（不存在）</td><td>404</td><td>404</td></tr>
+<tr><td><code>GET /api/v1/runs?cursor=abc</code></td><td>400 INVALID_ARGUMENT</td><td>400 <code>"cursor 不合法"</code></td></tr>
+<tr><td><code>GET /api/v1/runs?limit=99999</code></td><td>400</td><td>400 <code>"limit 必须在 1..200 之间"</code></td></tr>
+<tr><td><code>GET /api/v1/erp/capabilities</code></td><td>已装配→能力清单；未装配→明确失败，<strong>不得假成功</strong></td><td>compose（已装配）→ <strong>200</strong> 完整能力清单；手工探测（未装配）→ 503 <code>UNAVAILABLE</code>「ERP Adapter 未装配…」</td></tr>
+<tr><td><code>GET /api/v1/stream</code></td><td>SSE</td><td>200 <code>text/event-stream</code>，<code>X-Accel-Buffering: no</code>，含 <code>retry:</code> 提示</td></tr>
+<tr><td><code>cmd/worker</code></td><td>真实领取并 fencing</td><td>日志：<code>claimed run … epoch=1</code>→<code>epoch=3</code>，<code>attempt=2</code></td></tr>
+</tbody></table>
+<p><strong>401 响应体实测</strong>（与 contracts/02 §4 逐字段一致）：</p>
+<pre><code>{&quot;error&quot;:{&quot;code&quot;:&quot;UNAUTHENTICATED&quot;,&quot;base_code&quot;:&quot;UNAUTHENTICATED&quot;,
+          &quot;message&quot;:&quot;缺少身份凭据&quot;,&quot;retryable&quot;:false},
+ &quot;request_id&quot;:&quot;req_2ea80e8b7451f86e&quot;}</code></pre>
+<h3>1.4 数据库与安全实测（在<strong>已启动实例</strong> <code>odap-postgres-1</code> 上实测）</h3>
+<table><thead><tr><th>指标</th><th>实测值</th></tr></thead><tbody>
+<tr><td>业务 schema（不含 <code>system</code>/<code>pg_*</code>）</td><td>15</td></tr>
+<tr><td>业务表（BASE TABLE，不含 <code>system</code>）</td><td>86</td></tr>
+<tr><td>RLS 策略</td><td>46</td></tr>
+<tr><td>启用 RLS 的表 / 其中 FORCE</td><td>46 / 46</td></tr>
+<tr><td>已应用迁移</td><td>17</td></tr>
+<tr><td>跨租户读取</td><td>租户 A 见 <strong>1</strong> 行、租户 B 见 <strong>0</strong> 行 <code>[M]</code></td></tr>
+<tr><td>跨租户写入</td><td>被 <code>WITH CHECK</code> 拒绝：<code>new row violates row-level security policy for table "named_graphs"</code> <code>[M]</code></td></tr>
+<tr><td>应用角色</td><td><code>odap_app</code>：<code>rolsuper=false</code>、<code>rolbypassrls=false</code>、<code>rolcanlogin=true</code>（RLS 真实生效）<code>[M]</code></td></tr>
+</tbody></table>
+<h3>1.5 本项目实际启动（<code>docker compose up -d --build</code>）实测</h3>
+<p>按第十六篇 §8.2「最小启动路径」真实启动整套服务：</p>
+<table><thead><tr><th>服务</th><th>状态</th><th>说明</th></tr></thead><tbody>
+<tr><td><code>postgres</code></td><td>Up (healthy)</td><td>平台库，宿主 <code>127.0.0.1:5432</code></td></tr>
+<tr><td><code>mockerp-db</code></td><td>Up (healthy)</td><td>Mock ERP 库，宿主 <code>127.0.0.1:5443</code>（本机 5433 被无关容器占用，见 §6）</td></tr>
+<tr><td><code>migrate</code></td><td><strong>Exited (0)</strong></td><td>17 个平台迁移全部 applied，<code>skipped=0</code></td></tr>
+<tr><td><code>migrate-mockerp</code></td><td><strong>Exited (0)</strong></td><td>1 个 Mock ERP 迁移 applied</td></tr>
+<tr><td><code>mockerp</code></td><td>Up</td><td><code>mock-erp 启动 addr=:8081</code>；容器网络内 <code>/mock/health</code> → 200</td></tr>
+<tr><td><code>api</code></td><td>Up</td><td><code>database connected</code> → <code>api listening addr=:8080 env=development</code></td></tr>
+<tr><td><code>worker</code></td><td>Up</td><td><code>worker started concurrency=4 lease_seconds=30</code></td></tr>
+<tr><td><code>web</code></td><td>Up</td><td>nginx 托管前端，入口 <code>http://127.0.0.1:5173</code></td></tr>
+</tbody></table>
+<p>端到端探针（真实进程 + 真实库 + 真实容器网络）：</p>
+<table><thead><tr><th>请求</th><th>结果</th></tr></thead><tbody>
+<tr><td><code>GET http://127.0.0.1:8080/healthz</code></td><td>200 <code>{"service":"api","status":"ok",...}</code></td></tr>
+<tr><td><code>GET http://127.0.0.1:8080/readyz</code></td><td>200 <code>{"checks":{"database":"ok"},"status":"ok"}</code></td></tr>
+<tr><td><code>GET /api/v1/runs</code>（无身份）</td><td>401，响应体严格符合 contracts/02 §4</td></tr>
+<tr><td><code>GET /api/v1/runs</code>（带 <code>X-Odap-Dev-*</code> 身份）</td><td>200 <code>{"items":[],"next_cursor":""}</code></td></tr>
+<tr><td><code>GET /api/v1/runs?limit=99999</code></td><td>400 <code>INVALID_ARGUMENT</code>「limit 必须在 1..200 之间」</td></tr>
+<tr><td><code>GET /api/v1/erp/capabilities</code>（compose 已装配适配器）</td><td>200：<code>Employee/Department/ExpenseClaim</code> + 3 个操作，幂等级别 L1</td></tr>
+<tr><td><code>GET /api/v1/stream</code></td><td>200 <code>text/event-stream</code> + <code>X-Accel-Buffering: no</code></td></tr>
+<tr><td><code>GET http://127.0.0.1:5173/</code></td><td>200 <code>text/html</code>，标题「ODAP · 企业本体驱动智能体平台」</td></tr>
+<tr><td><code>GET http://127.0.0.1:5173/api/v1/runs</code>（经 nginx 反代）</td><td>401（证明 <code>/api</code> 已反代到 api）</td></tr>
+<tr><td><code>GET http://mockerp:8081/mock/health</code>（容器网络内）</td><td>200 <code>{"status":"ok",...}</code></td></tr>
+</tbody></table>
+<blockquote><strong><code>api</code>/<code>worker</code> 保持 Up（而非崩溃重启）本身就是缺陷 #6（应用角色密码缺失）已修复的运行时证据</strong>：若 <code>odap_app</code> 密码未设置，进程在启动阶段即因 <code>password authentication failed for user "odap_app"</code> 退出。</blockquote>
+<h3>1.6 前端产品级 UI 验收实测（真实浏览器 + 真实 compose 栈）</h3>
+<p>对<strong>真实运行的整套 compose 栈</strong>（<code>http://127.0.0.1:5173</code>）做逐路由渲染体检与逐页截图断言。判定不靠"肉眼看像不像"，而靠<strong>可复现的脚本门禁</strong>：<code>tools/ui-route-sweep.sh</code>（19 条路由）与 <code>tools/ui-verify.sh</code>（10 页 × 7 项断言 + 细节读数）。</p>
+<p><strong>A. 全路由渲染体检（19/19 通过，无白屏、页头齐全）——修复后复测读数</strong></p>
+<p>下表为<strong>注入演示数据 + 修复缺陷 #19（<code>reading 'tone'</code>）/ #21（<code>reading 'display_name'</code>）/ #22（静默假空）之后</strong>的重测读数（<code>tools/ui-route-sweep.sh</code>，<code>sweep_exit=0</code>）。加粗数值为<strong>有真实数据投影</strong>的页面（无空态标题）；括号内为修复前读数与当时的故障形态。<strong>全部 19 条读数均非 <code>NOTREADY</code>/<code>-1</code></strong>：脚本对"导航未完成"做 <code>20×1s</code> 轮询 + 兜底重导航，专为避免"导航中读数=-1"被误判为白屏（该假阴性曾在容器重启期间真实发生，故已写入脚本注释）。</p>
+<table><thead><tr><th>路由</th><th>页面标题</th><th>修复前</th><th>复测长度</th><th>空态/状态标题</th><th>状态</th></tr></thead><tbody>
+<tr><td><code>/workspace</code></td><td>我的工作台</td><td>412</td><td>440</td><td>—</td><td>✅</td></tr>
+<tr><td><code>/assistant</code></td><td>AI 业务助手</td><td>296</td><td>296</td><td>—</td><td>✅</td></tr>
+<tr><td><code>/tasks</code></td><td>我的任务</td><td>260</td><td>283</td><td>—</td><td>✅</td></tr>
+<tr><td><code>/approvals</code></td><td>审批中心</td><td>204</td><td>204</td><td>暂无审批事项</td><td>✅</td></tr>
+<tr><td><code>/apps</code></td><td>业务应用</td><td>198</td><td>257</td><td>—</td><td>✅</td></tr>
+<tr><td><code>/admin</code></td><td>平台管理概览</td><td>1011</td><td>995</td><td>—</td><td>✅（修复前白屏）</td></tr>
+<tr><td><code>/admin/identity</code></td><td>身份与权限</td><td>625</td><td><strong>959</strong></td><td>—</td><td>✅（修复前崩溃：<code>reading 'display_name'</code>，#21）</td></tr>
+<tr><td><code>/admin/ontologies</code></td><td>企业本体</td><td>273</td><td><strong>342</strong></td><td>—</td><td>✅（修复前崩溃：<code>reading 'tone'</code>，#19）</td></tr>
+<tr><td><code>/admin/data-sources</code></td><td>数据接入与映射</td><td>599</td><td>599</td><td>端点尚未登记</td><td>✅（修复前报误导性错误）</td></tr>
+<tr><td><code>/admin/agents</code></td><td>Agent 管理</td><td>377</td><td><strong>533</strong></td><td>—</td><td>✅</td></tr>
+<tr><td><code>/admin/tools</code></td><td>工具管理</td><td>436</td><td><strong>1196</strong></td><td>—</td><td>✅</td></tr>
+<tr><td><code>/admin/workflows</code></td><td>工作流与 Harness</td><td>487</td><td><strong>480</strong></td><td>—</td><td>✅（修复前为 503 空态，缺陷 #24）</td></tr>
+<tr><td><code>/admin/models</code></td><td>模型与推理</td><td>357</td><td><strong>965</strong></td><td>—</td><td>✅（修复前静默假空：#22）</td></tr>
+<tr><td><code>/admin/connectors</code></td><td>ERP 与外部集成</td><td>360</td><td>360</td><td>尚未配置连接器</td><td>✅</td></tr>
+<tr><td><code>/admin/policies</code></td><td>策略与审批</td><td>806</td><td>806</td><td>暂无策略</td><td>✅</td></tr>
+<tr><td><code>/admin/monitoring</code></td><td>运行监控</td><td>411</td><td>411</td><td>暂无告警</td><td>✅</td></tr>
+<tr><td><code>/admin/audit</code></td><td>审计与证据</td><td>324</td><td>324</td><td>暂无审计事件</td><td>✅</td></tr>
+<tr><td><code>/admin/evaluation</code></td><td>评估与质量门禁</td><td>271</td><td>271</td><td>暂无评估任务</td><td>✅</td></tr>
+<tr><td><code>/admin/releases</code></td><td>插件与版本发布</td><td>274</td><td>274</td><td>暂无发布记录</td><td>✅</td></tr>
+</tbody></table>
+<blockquote><strong>"有数据"与"空态"的可判别签名</strong>：<code>/admin/ontologies</code>（342）、<code>/admin/agents</code>（533）、<code>/admin/tools</code>（1196）、<code>/admin/identity</code>（959）、<code>/admin/models</code>（965）、<code>/admin/workflows</code>（480）六页<strong>均无空态标题</strong>——这正是"表格有真实行"的体现（工作流页修复前是 503 空态标题"依赖服务暂不可用"，见缺陷 #24）。其余页面的"暂无…/尚未…"标题是<strong>接口返回真实空集的诚实空态</strong>，非缺陷。判定数据是否真的投影，不能只看"标题在、无报错"——<code>tools/ui-route-sweep.sh</code> 只断言标题与根节点长度，对"标题在、表格崩"是<strong>假阴性</strong>；因此另设 <code>tools/ui-catalog-verify.sh</code> 专门断言<strong>数据行数 / 徽标数 / 不得出现"未知状态"</strong>。</blockquote>
+<blockquote><strong>关于缺陷 #23 与本表的关系</strong>：本表是<strong>新起浏览器</strong>的读数，因此它<strong>无法证明用户能拿到这个版本</strong>。入口 HTML 若被启发式缓存，用户仍会跑旧包——见缺陷 #23 与 <code>tools/http-entry-cache-verify.sh</code>。<strong>"验证环境"与"用户环境"不同，是这类缺陷长期存活的根本原因。</strong></blockquote>
+<blockquote><strong><code>/admin/workflows</code> 的更正（缺陷 #24）</strong>：本页此前显示空态"依赖服务暂不可用"，来自 <code>GET /api/v1/plan-templates</code> → <strong>503 <code>UNAVAILABLE</code></strong>，响应体称「plan-templates 资产在 MVP 数据库 schema 中无对应持久表」。<strong>该判断当时被当作"契约要求的 fail-closed 诚实失败"而保留，事后证明是误判</strong>：模板资产与执行计划<strong>共用</strong> <code>planning.plans</code>/<code>plan_revisions</code>，以 <code>status='TEMPLATE'</code> 判别，种子早已写入真实模板行——<strong>表在、行在，只是查询从未被写出来</strong>。真正的 fail-closed 是"明确失败而非假成功"，但<strong>不适用于"数据其实存在、只是没人去读"</strong>。现已实现真实投影，本页显示 <code>报销审核工作流（FINANCE）</code>（1 行，<code>state=VALIDATED</code>，6 个节点）。</blockquote>
+<p><strong>B. 产品级 UI 断言（10 页 × 7 项 = 70 项，全部通过；加上细节读数共 73 项通过、0 项失败）</strong></p>
+<p>每页断言：① 页面头部图标已渲染；② 侧栏导航图标已渲染（<code>≥4</code>）；③ <strong>每个导航项都有图标（无纯文字项）</strong>；④ 品牌徽记（三点连边，3 个 <code>&lt;circle&gt;</code>）已渲染；⑤ SVG 图标总数 <code>≥8</code>；⑥ 顶栏控件为图标按钮；⑦ <strong>主区域无裸 Unicode 字形图标（0 个）</strong>。</p>
+<p><strong>C. 关键量值读数（真实计算样式，非估算）</strong></p>
+<table><thead><tr><th>指标</th><th>实测值</th><th>设计依据</th></tr></thead><tbody>
+<tr><td>正文字号</td><td><strong>14px</strong></td><td>第十七篇 §3.3「基础字号 14px」✅</td></tr>
+<tr><td>页面标题字号</td><td><strong>28px</strong></td><td>§3.3「页面标题 24–28px」上限 ✅</td></tr>
+<tr><td>指标卡数值字号</td><td><strong>32px</strong></td><td>数据展示层，需强于区域标题以支撑"一眼读数"</td></tr>
+<tr><td>指标卡数值数字形态</td><td><strong><code>tabular-nums</code></strong></td><td>等宽数字，多卡纵向对齐不跳动</td></tr>
+<tr><td>工作台指标卡</td><td>4 张，<strong>4 个图标</strong></td><td>四类状态各配语义图标</td></tr>
+<tr><td>侧栏折叠后宽度</td><td><strong>68px</strong></td><td>折叠后仅剩图标，宽度回收</td></tr>
+<tr><td>12 张截图字节数</td><td>46,502–79,594</td><td>2–8KB 视为白屏；<strong>全部远高于阈值 = 真实渲染</strong></td></tr>
+</tbody></table>
+<p><strong>D. 本轮为达到产品级所做的改造（对齐第十七篇 §3）</strong></p>
+<table><thead><tr><th>项</th><th>改造前</th><th>改造后</th></tr></thead><tbody>
+<tr><td><strong>图标</strong></td><td>直接用 Unicode 字形（<code>⚠ ⚑ ⊘ ⇄ ✕ ✓ ▶ ◔ ↻ ‖</code> 等）充数——字体差异导致各平台粗细不齐、无法与文字基线对齐，是"界面简陋"的首要来源</td><td><strong>自研 SVG 图标集，73 个图标</strong>，统一 24×24 视图框 / 统一线宽 1.75 / 圆角端点 / <code>currentColor</code> 跟随语义色 / 默认 <code>aria-hidden</code>。批量替换 <strong>31 处</strong>裸字形；三个转换脚本（<code>iconify-glyphs</code> / <code>pageheader</code> / <code>button-icons</code>）均已验证幂等</td></tr>
+<tr><td><strong>页面头部</strong></td><td>22 个页面各自拼装 <code>&lt;header&gt;</code>，标题层级与间距不一致</td><td>收敛为统一 <code>&lt;PageHeader icon title subtitle actions/&gt;</code>；<strong>22/22 页面完成</strong>，路由 → 图标映射与侧栏保持一致</td></tr>
+<tr><td><strong>按钮</strong></td><td>纯文字按钮，缺少操作语义提示</td><td>按标签词表补前置图标 <strong>36 处</strong></td></tr>
+<tr><td><strong>品牌标识</strong></td><td>直接以文字 "ODAP" 充当 logo，无识别度</td><td>品牌徽记（"三点连边"呼应本体驱动：节点 + 关系）+ 名称 + 副标题双行；新增 <code>favicon.svg</code>（品牌渐变 + 同款徽记）与 <code>theme-color #2457a7</code></td></tr>
+<tr><td><strong>状态表达</strong></td><td>部分状态仅靠颜色</td><td>§3.2 约束「颜色不能成为唯一的状态表达方式」→ 一律 <strong>颜色 + 文字 + 图标</strong> 三重表达</td></tr>
+<tr><td><strong>契约→视图分层</strong></td><td>页面直接消费契约 JSON，字段演进即打崩页面</td><td>新增 <code>workspace/view-model.ts</code> 纯函数层与 <code>normalize()</code> 空值防御；契约字段一律 <code>?? 0</code> 兜底</td></tr>
+<tr><td><strong>侧栏</strong></td><td>平铺列表，无分组</td><td>分组标题（平台管理 / 语义与数据 / 设计与执行 / 模型与集成）+ 每项图标 + 当前项选中指示</td></tr>
+</tbody></table>
+<h3>1.7 演示数据注入与模型调用链实测</h3>
+<p>数据与代码分离：实体定义全部落在 <code>datasets/finance-demo/*.json</code>，<code>internal/seed</code> 只负责<strong>加载 → 校验 → 写入</strong>。这样数据集可独立审阅、替换与版本化，业务定义不必硬编码进 Go 代码。</p>
+<table><thead><tr><th>维度</th><th>实测结果</th></tr></thead><tbody>
+<tr><td>数据集文件</td><td><code>dataset.json</code>（租户/用户/组织/角色/成员/绑定）、<code>ontologies.json</code>、<code>agents.json</code>、<code>tools.json</code>、<code>providers.json</code>、<code>plans.json</code>、<code>runs.json</code> 共 <strong>7 个</strong></td></tr>
+<tr><td>本体</td><td><code>finance-core@0.1.0</code>（PUBLISHED）+ <strong>3 个真实构件</strong>（OWL turtle / SHACL shapes / DOCUMENT markdown）+ 1 条校验记录（4 项全 true）+ 1 条发布记录；构件 digest/size 由 seed 就地计算</td></tr>
+<tr><td>Agent</td><td><code>finance-expense-auditor</code>（PUBLISHED）含输入/输出 Schema、提示词模板、config、以及依赖清单（工具/本体/模型）</td></tr>
+<tr><td>Agent 可用工具</td><td><strong>7 个</strong>，覆盖三类副作用等级：<code>READ</code> ×5（<code>erp.expense.query</code> / <code>erp.vendor.lookup</code> / <code>kb.policy.search</code> / <code>doc.receipt.extract</code> / <code>budget.check</code>）、<code>EXTERNAL_WRITE</code> ×1（<code>erp.expense.decide</code>，<code>requires_approval</code>）、<code>INTERNAL_WRITE</code> ×1（<code>audit.ledger.append</code>）；每个工具含独立插件 + PUBLISHED 版本</td></tr>
+<tr><td>模型供应商</td><td><strong>2 个供应商 / 2 个端点 / 3 个模型版本 / 3 条内容寻址能力档案</strong>：<code>mock-local</code>（MOCK，离线确定性）、<code>openai-compat</code>（HTTP，<code>base_url</code> + <code>credential_ref=ODAP_LLM_API_KEY</code>，默认 <code>DISABLED</code>）</td></tr>
+<tr><td>调用链自检</td><td><code>api llm-check</code> 走完 <strong>Agent 契约读取 → Model Registry 装载 → 限流/预算/缓存/路由 → 供应商调用 → 结构化输出 → 用量记账 → 落账回查</strong>；输出 <code>{"decision":"APPROVE"}</code>，账本 <code>tokens=1110 status=SETTLED</code></td></tr>
+<tr><td>工作流模板</td><td><strong>1 个</strong>：<code>报销审核工作流（FINANCE）</code>，<code>planning.plans.status='TEMPLATE'</code> + 最新修订 <code>r1</code>（<code>validation_status=VALID</code> → <code>state=VALIDATED</code>）。步骤在 <code>plan_ir.steps</code>：<code>READ_OBJECT → ONTOLOGY_VALIDATE → RULE_EVALUATE → APPROVAL → ERP_OPERATION → RECONCILE</code>（对齐第十七篇 §7.3 节点词表），锁定本体 <code>finance-core</code>。由 <code>GET /api/v1/plan-templates</code> 投影（缺陷 #24：该端点此前恒 503）</td></tr>
+<tr><td>负向门禁</td><td>① 请求 <code>DISABLED</code> 端点上的模型 → <code>UNAVAILABLE</code>（不回落）；② 依赖清单写错工具名 → 注入期拒绝；③ Schema 用未登记关键字 → 注入期拒绝；④ 已发布版本与文件不一致 → 注入期报错（要求提升版本号或 <code>--replace</code>）</td></tr>
+</tbody></table>
+<hr/>
+<h2>2. 逐模块符合性矩阵（权威模块表：contracts/04 §1）</h2>
+<table><thead><tr><th>模块</th><th>设计来源</th><th>实现位置</th><th>符合性</th><th>关键证据</th></tr></thead><tbody>
+<tr><td><strong>M01</strong> Identity &amp; Organization</td><td>第三篇</td><td><code>internal/identity/</code>（tenant/org/user/session）+ <code>iam</code> schema</td><td>✅</td><td><code>[U]</code> identity 包全绿；<code>iam.sessions</code>/<code>memberships</code> RLS 实测</td></tr>
+<tr><td><strong>M02</strong> Authorization Engine</td><td>第三篇</td><td><code>internal/authorization/</code>（dsl/engine/store）+ <code>governance</code> schema</td><td>✅</td><td><code>[U]</code> JSON DSL V1 解析、三态 <code>ALLOW/DENY/REQUIRE_APPROVAL</code>、fail-closed；<code>authorization_decisions</code> 表存在</td></tr>
+<tr><td><strong>M03</strong> Agent Registry</td><td>第四篇 + 第八篇</td><td><code>internal/registry/</code>（service/agent/tool/manifest）</td><td>✅</td><td><code>[U]</code> 版本唯一性、Manifest 校验、升级历史；ADR-002 版本锁定</td></tr>
+<tr><td><strong>M04</strong> Ontology Registry</td><td>第四篇 + 第五篇</td><td><code>internal/registry/</code> + <code>ontology</code> schema（6 表全 RLS）</td><td>✅</td><td><code>[M]</code> ontology schema 6/6 表 RLS；<code>ontologies/{id}/validate/publish</code> 端点已实现</td></tr>
+<tr><td><strong>M05</strong> Ontology Engineering</td><td>第五篇</td><td>制度解析最小闭环</td><td>🟡</td><td>设计书自标 <code>[V1.5]</code>；MVP 仅做解析最小闭环（见 §5 偏差清单）</td></tr>
+<tr><td><strong>M06</strong> Ontology Runtime</td><td>第五篇 + 第十三篇</td><td><code>internal/ontology/{graphstore,rdfs,shacl,semantic,cache}</code></td><td>✅</td><td><code>[U]</code> 52 测试；<code>sh:sparql</code> fail-closed 拒绝（<code>[M]</code> 源码核验）；RDFS 逐条锚定 W3C 规则号</td></tr>
+<tr><td><strong>M07</strong> Harness Runtime</td><td>第六篇</td><td><code>internal/harness/{state,events,facts,machine,scheduler,checkpoint}</code></td><td>✅</td><td><code>[U]</code> 17×31 转换矩阵全格覆盖；<code>runstate.All</code> ↔ contracts/01 ↔ DDL 三方相等 <code>[C]</code></td></tr>
+<tr><td><strong>M08</strong> Tool Registry &amp; Runtime</td><td>第四篇 + 第十四篇</td><td><code>internal/tools/</code> + <code>internal/agent/executor.go</code></td><td>✅</td><td><code>[U]</code> JSON Schema 子集校验 fail-closed；<strong>ReadExecutor / WriteGateway 分离</strong> <code>[M]</code> 源码核验</td></tr>
+<tr><td><strong>M09</strong> Workflow &amp; Approval</td><td>第六篇 + 第十四篇</td><td>harness + <code>workflow</code> schema + <code>handlers/approvals.go</code></td><td>✅</td><td><code>[U]</code> 审批并发控制；<code>POST /approvals/{id}/decision</code> 带 <code>Idempotency-Key</code></td></tr>
+<tr><td><strong>M10</strong> ERP Integration</td><td>第七篇</td><td><code>internal/erp/</code> + <code>mockerp/</code>（独立服务）</td><td>✅</td><td><code>[U]</code> 五元组幂等键、L1/L2/L3 重试能力分级；Mock 故障注入（timeout/reject/unknown/duplicate）；<code>ERP_OPERATION_UNKNOWN→EXECUTION_UNKNOWN</code></td></tr>
+<tr><td><strong>M11</strong> Audit &amp; Evidence</td><td>第十一篇 + 第二篇</td><td><code>internal/audit/</code>（哈希链 + fail-closed）+ <code>internal/evidence/</code></td><td>✅</td><td><code>[I]</code> 真实 PG 上哈希链校验通过；<code>event_payload_canonical</code> 往返一致；<code>audit_events</code> 只授 INSERT+SELECT + append-only 触发器</td></tr>
+<tr><td><strong>M12</strong> Admin &amp; Observability</td><td>第十一篇</td><td><code>handlers/</code>、<code>middleware/logging.go</code>、<code>sse/hub.go</code></td><td>🟡</td><td>结构化日志 + SSE 已实现；Prometheus 指标与 Trace 为 <code>[V1.5]</code>（设计书 §3.3 成本模型）</td></tr>
+<tr><td><strong>M13</strong> Data Ingestion &amp; Governance</td><td>第十二篇</td><td>—</td><td>⬜</td><td>设计书标 <code>[V1.5]</code>（MVP 用静态导入），<strong>本波次按范围排除</strong></td></tr>
+<tr><td><strong>M14</strong> LLM Gateway</td><td>第九篇</td><td><code>internal/llm/{provider,semcache,ratelimit,usage,gateway,schemarepair}</code></td><td>✅</td><td><code>[U]</code> 三层语义缓存 + <code>cache_hit</code> 降权（<code>CacheHitWeight=0.3</code>）+ 令牌桶 + 预算守卫；<code>MODEL_BUDGET_EXCEEDED→RESOURCE_EXHAUSTED</code></td></tr>
+<tr><td><strong>M15</strong> Evaluation &amp; Simulation</td><td>第十五篇</td><td><code>evaluation</code>/<code>simulation</code> schema + <code>handlers/evaluations.go</code></td><td>🟡</td><td>表结构与端点就绪；完整仿真引擎为 <code>[V1.5]</code>（MVP 用手工用例集）</td></tr>
+<tr><td><strong>M16</strong> Event Bus &amp; Reliable Execution</td><td>第十篇</td><td><code>internal/execution/{outbox,inbox,lease}</code></td><td>✅</td><td><code>[I]</code> Outbox 行锁序号分配 + 两段式发布 + 指数退避；Inbox 去重短路 + 死信</td></tr>
+<tr><td><strong>M17</strong> Web Workspace &amp; Admin UI</td><td>第十七篇</td><td><code>web/</code>（101 文件 / 12,140 行）</td><td>✅</td><td><code>[P]</code> <code>tsc --noEmit</code> + <code>vite build</code> 通过；§3.2 八色令牌精确；<strong>17 状态标签全覆盖</strong> <code>[C]</code>；Run↔ERP 状态并列组件明确禁止"Run 终态=业务成功"</td></tr>
+</tbody></table>
+<p><strong>模块符合性汇总</strong>：15 ✅ / 3 🟡 / 1 ⬜（其中 ⬜ 与 2 个 🟡 均由设计书自身标注为 V1.5 或 MVP 简化范围）</p>
+<hr/>
+<h2>3. 契约一致性（唯一真源：docs/contracts/*）</h2>
+<table><thead><tr><th>契约</th><th>要求</th><th>验证方式</th><th>结果</th></tr></thead><tbody>
+<tr><td><strong>contracts/01 §6</strong></td><td>状态词表：分册/DDL/前端 ⊆ 本表；本表每状态出现在第六篇矩阵；DDL CHECK 与表逐项相等；前端标签覆盖 17 态</td><td><code>tools/contract-lint</code>（新建）</td><td>✅ 4 项断言全绿</td></tr>
+<tr><td><strong>contracts/02 §4</strong></td><td>全仓错误码 ⊆ 注册表；一码一义</td><td><code>tools/contract-lint</code></td><td>✅ 12 基础码相等；38 个实现码全部已登记</td></tr>
+<tr><td><strong>contracts/03</strong></td><td><code>/api/v1</code> 前缀、kebab-case、cursor 分页、<code>Idempotency-Key</code>、SSE <code>GET /api/v1/stream</code>、异步 <code>GET /api/v1/tasks/{id}</code></td><td><code>internal/api/router.go</code> + <code>contracts/openapi.yaml</code> + 自动断言</td><td>✅ 38 路径 / 46 方法 / 42 schema；<strong><code>TestOpenAPICoversAllRoutes</code>（路由 ⊆ openapi）、<code>TestOpenAPIRunStatusEnumMatchesRegistry</code>（17 态逐值相等）、<code>TestAllContractEndpointsRegistered</code> 三条单测断言</strong></td></tr>
+<tr><td><strong>contracts/04</strong></td><td>模块↔分册↔阶段↔范围追溯</td><td>本报告 §2</td><td>✅ M01–M17 与实现一一对应</td></tr>
+<tr><td><strong>ADR-001</strong> PlanIR 合并规范</td><td>Planner 只产候选；Harness Compiler 编译；Orchestrator 执行；读写分离</td><td><code>internal/agent/{planir,planner,executor}.go</code></td><td>✅ 13 种节点类型；ReadExecutor/WriteGateway 物理分离</td></tr>
+<tr><td><strong>ADR-002</strong> Registry 版本锁定</td><td>版本不可变、发布走版本 ID</td><td><code>internal/registry/</code> + <code>registry</code> schema（7 表 RLS）</td><td>✅</td></tr>
+<tr><td><strong>ADR-003</strong> 自研与开源选型</td><td>本体存储自研（PG 三元组 + 三索引）</td><td><code>internal/ontology/graphstore/</code> + <code>graph.triples</code> LIST 分区</td><td>✅ PK+POS+OSP 三索引；按 <code>tenant_id</code> 声明式分区</td></tr>
+<tr><td><strong>ADR-005</strong> 图存储选型与适配器边界</td><td>Fuseki/TDB2 与 PG 引擎<strong>并存</strong>，全部访问经存储无关的 <code>GraphStore</code>；业务模块禁直拼 SPARQL；跨库不假定原子事务</td><td><code>internal/ontology/graphstore/{store,rdf,fusekistore,factory}.go</code>；<code>tests/unit/arch_test.go</code> 唯一入口门禁；<code>bash tools/ci/12-graphstore.sh</code></td><td>✅ 真实 SPARQL 引擎 <strong>17/17</strong> 通过（含租户命名图隔离、空白节点可寻址、幂等与精确条数）；<code>GRAPHSTORE_MODE</code> 非法值 fail-closed</td></tr>
+</tbody></table>
+<p><strong>新建门禁工具</strong>：<code>tools/contract-lint</code>（contracts/01 §6 与 contracts/02 §4 强制要求，此前缺失）。已接入 <code>make lint</code>。</p>
+<hr/>
+<h2>4. 阶段退出条件核对（权威：第十六篇 §11）</h2>
+<table><thead><tr><th>阶段</th><th>退出条件要点</th><th>本波次状态</th><th>证据</th></tr></thead><tbody>
+<tr><td>P0 工程底座</td><td>可重复启动 + CI + contracts lint 生效</td><td>✅</td><td><code>make build/test/lint</code>；<code>tools/contract-lint</code> 就位；<strong>已真实 <code>docker compose up -d --build</code> 验证"可重复启动"</strong></td></tr>
+<tr><td>P1 身份与插件注册</td><td>越权/隔离测试通过；决策可重放</td><td>✅</td><td>跨租户读 0 行 / 写被拒 <code>[M]</code>；<code>authorization_decisions</code> 表</td></tr>
+<tr><td>P2 本体与语义运行时</td><td>可上传/验证/发布/回滚</td><td>🟡</td><td>验证/发布端点就位；<strong>存储选型 Spike 报告</strong>未产出（见 §5）</td></tr>
+<tr><td>P3 Harness 与 Agent</td><td>状态矩阵全格覆盖；暂停恢复/幂等启动</td><td>✅</td><td><code>[U]</code> 矩阵全覆盖 + fencing + checkpoint 漂移检测</td></tr>
+<tr><td>P4 Mock ERP 受控写入</td><td>成功/拒绝/超时/重复/未知五类通过对账</td><td>✅</td><td>Mock 五类故障注入 + Reconciler；<code>ERP_OPERATION_UNKNOWN</code> 语义</td></tr>
+<tr><td>P5 审计与证据</td><td>fail-closed 分级；哈希链可验证</td><td>✅</td><td><code>[I]</code> 真实 PG 校验通过；<code>WriteOrBlock</code> CRITICAL/NORMAL 分级</td></tr>
+<tr><td>P6 评估与门禁</td><td>仿真引擎就绪（硬前置）；门禁可执行</td><td>⬜</td><td><strong>硬前置仿真引擎属 V1.5</strong>，本波次按范围排除</td></tr>
+<tr><td>P7 端到端 MVP</td><td>报销切片端到端 + E2E 矩阵</td><td>🟡</td><td>各层单测/集成测试就位；<strong>尚未跑通完整 11 步 E2E</strong>（依赖 P6 外的联调）</td></tr>
+</tbody></table>
+<hr/>
+<h2>5. 自查发现的缺陷（及修复）——本报告的核心价值</h2>
+<p>自查不止是"打勾"，而是<strong>用逐项对账找出实现与设计的真实偏差</strong>。本波次共发现并修复 <strong>24 处真实缺陷</strong>（#1–#7 为后端/数据面，#8–#11 为前端契约一致性，#12–#18 为数据注入与模型调用链打通阶段暴露的缺陷，#19–#22 为前端状态投影 / 端点缺口 / 静默假空，#23–#24 为<strong>部署可送达性</strong>与<strong>端点落后于种子数据</strong>）：</p>
+<table><thead><tr><th>#</th><th>缺陷</th><th>严重度</th><th>发现手段</th><th>修复</th></tr></thead><tbody>
+<tr><td>1</td><td><code>runstate.SchedulingClassOf</code> 把 <code>CREATED</code>/<code>CONTEXT_BUILDING</code> 排除在可调度集外 → <strong>新建 Run 永久无人领取（死锁级）</strong></td><td>高</td><td>状态机与第六篇 §3.1「是否可调度」列逐项对照</td><td>修正为 <code>{CREATED, CONTEXT_BUILDING, READY, RUNNING}</code>；同步迁移 000013 队列部分索引</td></tr>
+<tr><td>2</td><td><code>execution.consumer_inbox</code> 声明 <code>PARTITION BY RANGE</code> 但<strong>未建任何分区</strong> → 插入必然报错</td><td>高</td><td>真实库实测插入</td><td>迁移 000014 补按月分区 + DEFAULT 兜底，并补 RLS</td></tr>
+<tr><td>3</td><td>审计哈希链在真实 PG 上<strong>必然校验失败</strong>：JSONB 重排键/改写数字 + <code>timestamptz</code> 微秒 vs 纳秒</td><td>高</td><td><code>-tags integration</code> 集成测试（单测无法暴露）</td><td>迁移 000015 新增 <code>event_payload_canonical</code>；<code>occurred_at</code> 微秒取整</td></tr>
+<tr><td>4</td><td><strong>RLS 覆盖不完整</strong>：<code>planning.plans</code>、<code>planning.validation_runs</code>、<code>graph.named_graphs</code>、<code>release_mgmt.quality_gate_decisions</code> 均有 <code>tenant_id NOT NULL</code> 却无 RLS，违反第二篇 §9.2「逐表审查」</td><td>高（安全）</td><td>全新库迁移回放 + <code>information_schema</code> 逐表核对</td><td>迁移 000016 补 4 张标准策略 + 2 张平台级容忍策略 + 其余逐表 COMMENT 明示结论</td></tr>
+<tr><td>5</td><td><strong>错误码注册表漂移</strong>：实现把 3 个域码当基础码，且基础集与 contracts/02 §2 的 12 码不一致（缺 <code>INVALID_ARGUMENT</code>/<code>RESOURCE_EXHAUSTED</code>/<code>DEADLINE_EXCEEDED</code>；<code>VALIDATION_FAILED</code> 误映射 400 而非 422）。另有<strong>两处 base_code 双表冲突</strong>：<code>PLUGIN_MANIFEST_INVALID</code>（API 投影表→<code>INVALID_ARGUMENT</code> vs 平台注册表→<code>VALIDATION_FAILED</code>）、<code>ERP_RECEIPT_MISMATCH</code>（→<code>CONFLICT</code> vs →<code>VALIDATION_FAILED</code>）</td><td>中</td><td>逐码 grep 比对设计书与契约 + 对两处投影表交叉核对</td><td><strong>收敛为单一注册表</strong>：<code>internal/platform/errors</code> 落地 contracts/02 §2 的 12 基础码 + §3 全量域码；新增 <code>Spec.BaseCode</code> 与 <code>Projection()</code>，HTTP/retryable 一律由基础码派生；<code>internal/api/httperr</code> 改为<strong>纯投影</strong>（删除自有映射表，消除双表漂移）；contracts/02 新增 §3.7 登记实现码。门禁断言 63 个码全部已登记且映射一致</td></tr>
+<tr><td>6</td><td><strong>运行时应用角色 <code>odap_app</code> 从未设置密码</strong>：迁移 000011 只 <code>CREATE ROLE odap_app LOGIN NOBYPASSRLS NOSUPERUSER</code>（无密码），而 postgres 官方镜像对 TCP 连接默认追加 <code>host all all all scram-sha-256</code> → <code>docker compose up</code> 时 <code>api</code>/<code>worker</code> 必然 <code>FATAL: password authentication failed for user "odap_app"</code>，<strong>设计书规定的"最小启动路径"直接失败</strong></td><td>高（启动阻断）</td><td>真实执行最小启动路径 + 逐项追查该角色的密码来源</td><td>新增迁移 <strong>000017</strong>：读会话 GUC <code>odap.app_password</code> 并 <code>ALTER ROLE odap_app WITH LOGIN PASSWORD %L</code>；<code>cmd/migrate</code> 从 <code>ODAP_DATABASE_URL</code> 解析应用角色密码并以 <code>set_config(...)</code> 注入（<strong>单一真值来源：不新增环境变量，避免两处密码漂移</strong>）；未注入时回退与 <code>.env.example</code> 一致的本地默认值</td></tr>
+<tr><td>7</td><td><strong><code>config.Load</code> 对 <code>mock-erp</code> 也强制要求 <code>ODAP_DATABASE_URL</code></strong>：导致配置加载整体失败 → 同批次的 <code>LOG_LEVEL</code>/<code>MOCKERP_HTTP_ADDR</code> 被静默丢弃，并打印误导性告警（mock-erp 独立于平台库运行，本不需要该连接串）</td><td>低</td><td>启动后读 <code>mockerp</code> 日志（观察到 <code>config.Load 失败 … ODAP_DATABASE_URL is required</code> WARN）</td><td>平台库连接串改为<strong>按服务</strong>要求：<code>api</code>/<code>worker</code>/<code>migrate</code> 必需，<code>mock-erp</code> 不要求；新增 <code>internal/platform/config/config_test.go</code> 表驱动测试固化该规则</td></tr>
+<tr><td>8</td><td><strong>前端 <code>WorkspaceSummary</code> 类型与契约结构完全不符</strong>：手写结构为 <code>pending_count/running_count/completed_count/attention_count/period/recent_runs</code>，而契约（<code>contracts/openapi.yaml</code>）实际是 <code>runs_by_status: Record&lt;string,number&gt;</code> + <code>runs_total/terminal_runs/pending_approvals/...</code>。<code>apiGet&lt;T&gt;()</code> 不做运行时校验 → 指标全 <code>undefined</code>、<code>recent_runs.length</code> 抛 <code>TypeError</code> → <strong><code>/workspace</code> 整棵 React 树被卸载（白屏）</strong></td><td>高（页面不可用）</td><td>用 headless 浏览器逐路由体检：<code>/workspace</code> 的 <code>#root</code> 文本长度 <code>-1</code>（DOM 都不存在）</td><td>① <code>domain.ts</code> 的 <code>WorkspaceSummary</code> 对齐契约；② 新增 <code>workspace/view-model.ts</code> 纯函数层（契约 → 视图模型，字段一律 <code>?? 0</code> 兜底）；③ 契约不含"最近任务"，故新增 <code>useRecentRuns(limit=5)</code> 单独取 <code>/runs?order=-updated_at&amp;limit=5</code></td></tr>
+<tr><td>9</td><td><strong>前端 <code>AdminOverview</code> 假设了后端没有返回的四层结构</strong>：页面直接 <code>data.system_health.map(...)</code>，而后端只返回 <code>counts/platform_users</code> → <code>.map of undefined</code> → <strong><code>/admin</code> 白屏</strong>。契约与实现两侧都有缺口（契约 schema 未定义四层，后端也未聚合）</td><td>高（页面不可用）</td><td>同上，<code>/admin</code> 逐路由体检白屏</td><td>① 后端 <code>internal/api/store/audit_aggregate.go</code> 补齐<strong>四层完整聚合</strong>（系统健康 5 项 / 业务运行 / 语义健康 / 治理与质量），全部指标带口径注释；② <code>contracts/openapi.yaml</code> 扩展 schema 并把 <code>system_health/business/semantic/governance</code> 列入 <code>required</code>；③ 前端新增 <code>normalize(raw)</code> 空值防御（<code>?? []</code>、<code>?? {}</code>、状态文案 <code>?? c.state</code>）</td></tr>
+<tr><td>10</td><td><strong>前端 <code>BusinessApp</code> 类型与契约不符 + 空态提前 <code>return</code> 吞掉页头</strong>：类型写的是 <code>name/icon/org_scope/business_objects/task_types/...</code>，契约实际是 <code>agent_key/domain/description/status/latest_version</code>；且列表为空时函数提前 <code>return &lt;EmptyState/&gt;</code> → <strong>页面完全没有页头</strong>（用户看不出自己在哪一页）</td><td>中</td><td>逐路由体检：<code>/apps</code> 有内容但 <code>page__title</code> 为 <code>-</code></td><td>① 类型与 fixture 一并改为契约字段；② <code>PageHeader</code> <strong>永远渲染</strong>，加载/错误/空态/列表一律在下方分支；③ <code>domain → IconName</code> 映射并提供 <code>'apps'</code> 兜底</td></tr>
+<tr><td>11</td><td><strong><code>/admin/data-sources</code> 请求了既未登记契约、也无后端路由的端点</strong>：<code>GET /api/v1/data-sources</code> 直接 404，却被前端渲染成"资源不存在或不可见"——<strong>把"我方没做"说成"你的资源有问题"，是误导性错误</strong></td><td>中</td><td>逐路由体检：该页显示"资源不存在或不可见"</td><td>新增显式能力开关 <code>DATA_SOURCES_ENDPOINT_AVAILABLE = false</code>（并注明该端点未登记 openapi.yaml、无后端路由），<code>useDataSources</code> 以 <code>enabled</code> 关闭请求，空态标题改为"<strong>端点尚未登记</strong>"</td></tr>
+<tr><td>12</td><td><strong><code>registry.plugin_versions</code> 的不可变守卫静默取消一切 UPDATE/DELETE</strong>：<code>000003</code> 的 <code>BEFORE UPDATE OR DELETE</code> 触发器函数在"非已发布"分支 <code>RETURN NULL</code> —— 在 BEFORE 触发器中 <code>RETURN NULL</code> 的语义是<strong>取消本行操作</strong>。实测 <code>SELECT count(*)=2</code> 而 <code>DELETE ... RETURNING id</code> 恒为 0 行且<strong>无任何错误</strong></td><td>高（静默降级）</td><td><code>SELECT</code> 与 <code>DELETE</code> 结果自相矛盾 → 查 <code>pg_trigger</code> 发现守卫 → 读函数定义确认 <code>RETURN NULL</code></td><td>迁移 <strong>000018</strong>：非终态放行（<code>DELETE→OLD</code>、<code>UPDATE→NEW</code>），终态 <code>RAISE EXCEPTION</code>。修复后越权删除会<strong>显式报错</strong>，不再静默</td></tr>
+<tr><td>13</td><td><strong>模型能力声明无处存放，路由只能"乐观放行"</strong>：<code>llm.model_revisions</code> 只有 <code>capability_digest TEXT</code>（哈希），而第九篇 §5.2 要求的 <code>llm.capability_profiles</code>（经验证的能力记录）<strong>在 DDL 中从未创建</strong>。<code>Router.Resolve</code> 依据 <code>NativeSchema/SupportsSeed/SupportsTools</code> 做硬约束判定，这些字段<strong>无法从哈希反解</strong> → 需工具调用的请求可能被路由到不支持工具调用的端点，本应在路由阶段以 <code>UNAVAILABLE</code> 拒绝，却拖到运行时以供应商错误收场（违反 §6.1/§6.2）</td><td>高</td><td>实现 Gateway 从 DB 装配时逐字段对照：<code>ProviderCapabilities</code> 的每个字段在 <code>llm.*</code> 中都没有对应列</td><td>迁移 <strong>000019</strong> 建 <code>llm.capability_profiles</code>，<strong>主键即能力内容的规范化 SHA-256（内容寻址）</strong>，<code>model_revisions.capability_digest</code> 直接外键指向该表 —— 摘要与内容在结构上不可能漂移，相同能力的模型版本自动复用同一档案</td></tr>
+<tr><td>14</td><td><strong><code>llm.endpoints</code> 无网络地址，真实 HTTP 端点无法寻址</strong>：表里只有 <code>deployment_type/region_code/credential_ref</code>。凭据引用只回答"用哪把钥匙"，不回答"敲哪扇门"，因此除进程内模拟端点外无法真正发起调用</td><td>中</td><td>实现 <code>HTTPProvider</code> 时发现无字段可取基址</td><td>迁移 <strong>000019</strong> 增 <code>base_url</code>（并注明这是 MVP 扩展，待第九篇所述 Deployment Profile 表落地后应归位），seed 校验 <code>deployment_type=HTTP</code> 必须有 <code>base_url</code></td></tr>
+<tr><td>15</td><td><strong>用量账本 <code>endpoint_id</code> 恒为 NULL → 账本永远写不进去，且失败被静默吞掉</strong>：<code>llm.usage_ledger.endpoint_id</code> 为 NOT NULL，但 <code>Gateway.usageFor</code> 从不填充端点身份；而账本写失败按 §16.2 <strong>只告警不阻断业务</strong> → 每次调用都在后台写失败，账本长期为空，<strong>预算治理与月度对账全部失效却无人察觉</strong></td><td>高（静默降级）</td><td><code>llm-check</code> 自检的"落账回查"步骤直接失败：<code>no rows in result set</code>（日志里可见 <code>null value in column "endpoint_id"</code>）</td><td>新增 <code>Resolved{Provider, EndpointID, ModelRevisionID}</code> 让<strong>端点身份随路由结果一起返回</strong>；装配期用 <code>boundProvider</code> 包装 Provider 并绑定身份；<code>usageFor</code> 填 <code>endpoint_id/model_revision_id</code>；身份缺失时在调用前显式告警</td></tr>
+<tr><td>16</td><td><strong>Router 对"已点名的模型"静默回落</strong>：<code>Resolve</code> 在 <code>Routing[ModelID]</code> 命中的端点不存在或不满足能力时，会<strong>继续遍历并选一个别的模型</strong>。调用方按模型能力/计价所做的预算、质量门禁与可复现性假设随之失效，Run 记录的模型选择与实际调用也不符（违反 §5.3/§6.2）。补全严格语义时又发现第二层问题：被禁用的端点<strong>根本不会进入 <code>Routing</code></strong>，所以只改 <code>Routing</code> 分支并不能拦住回落</td><td>高（静默降级）</td><td>用 <code>llm-check --model gpt-4o-mini</code>（端点为 <code>DISABLED</code>）实测：返回了 <code>mock-chat</code> 的结果</td><td><code>Router</code> 新增 <code>Registered</code>（登记过的 ModelID → 不可用原因），<strong>登记即严格</strong>：已登记但不可用 → <code>UNAVAILABLE</code>，仅"未登记模型"才允许按能力择优；择优时若要求结构化输出则<strong>优先原生 Schema 端点</strong>（§6.4/§9.1）</td></tr>
+<tr><td>17</td><td><strong>seed 的版本行用 <code>ON CONFLICT DO NOTHING</code> → 改了数据文件重跑却静默保留旧内容</strong>：命令打印 <code>seed complete</code>，库里 <code>prompt_template</code>/<code>dependency_manifest</code> 仍是旧值；版本摘要又只覆盖 <code>input/output_schema</code>，<strong>构件（OWL/SHACL）内容变更同样不被察觉</strong>。另外 <code>dependency_manifest</code> 引用了不存在的工具/本体/模型时不报错（悬空引用）</td><td>高（静默降级）</td><td>改 <code>agents.json</code> 的 <code>dependency_manifest</code> 后重跑，命令成功但库内未变</td><td>① 版本摘要改为覆盖<strong>全部内容字段</strong>（含提示词、配置、依赖清单、构件内容）；② 版本行改 <code>DO UPDATE ... WHERE status NOT IN (终态)</code>：非终态收敛到文件、终态<strong>内容不一致即报错</strong>并给出处置建议；③ 新增 <code>--replace</code>（仅删除数据文件声明过的 ID，不做表级 TRUNCATE）；④ <code>Validate()</code> 增加 <code>dependency_manifest</code> 的 tools/ontology/models 跨节引用校验</td></tr>
+<tr><td>18</td><td><strong>工具/Agent 的 Schema 使用了平台校验器不支持的关键字</strong>：<code>internal/tools</code> 是 <strong>fail-closed</strong> 的（遇到未登记关键字直接拒绝），而为演示数据编写的工具 Schema 用了 <code>anyOf</code>（<code>erp.vendor.lookup</code>）与 <code>exclusiveMinimum</code>（<code>budget.check</code>）。这类 Schema 一旦进入运行期入参校验就必然失败；更糟的是"写了约束以为在生效"</td><td>中</td><td>通读 <code>internal/tools/validate.go</code> 的关键字白名单后，回头审查刚写的工具集</td><td>① 平台补 <code>tools.ValidateSchema</code>（复用同一白名单，<strong>只校验 Schema 本身、不校验数据</strong>）；② seed 在<strong>注入期</strong>校验全部 Agent/Tool 的 Schema 并定位到具体路径（<code>$.runtime_bad</code>）；③ 演示工具 Schema 改用受支持关键字（<code>anyOf</code>→<code>description</code> 说明，<code>exclusiveMinimum</code>→<code>minimum</code>）</td></tr>
+<tr><td>19</td><td><strong>前端状态投影直接索引 <code>META[x].tone</code>，未知取值直接白屏；且词表/字段与真实契约三方错位</strong>。表现为用户上报的 <code>Cannot read properties of undefined (reading 'tone')</code>。详见下方"#19 的三层根因"</td><td>高（页面不可用）</td><td>用户上报运行时报错 + 逐接口实测响应形状</td><td>① 新增 <code>components/status-badge/safe-meta.ts</code>（<code>resolveBadgeMeta</code>/<code>resolveStatusMeta</code>，只接受自有键、未知取值返回显式"未知状态"占位并点名原始取值）与声明式 <code>MetaBadge</code>；<strong>消除全部 21 处直接索引</strong>；② 类型与 fixture 一并按 <code>contracts/openapi.yaml</code> 的 <code>Ontology</code>/<code>Agent</code>/<code>Tool</code> 逐字段对齐，删除自造的 <code>state</code>/<code>version</code>/<code>owner</code>/<code>updated_at</code> 等字段；③ 修正本体/Agent/工具三个列表页列定义，工具页改用<strong>真实字段</strong> <code>effect_class</code> 表达能力边界；④ <code>useTask</code> 的 <code>TASK_PHASE_META</code> 改为 <code>resolveTaskPhase</code>（未知取值不再按终态处理）</td></tr>
+<tr><td>20</td><td><strong>前端调用了契约与后端都不存在的端点 <code>GET /api/v1/ontologies/{id}</code></strong>：该路径既不在 <code>contracts/openapi.yaml</code> 中定义，也未在 <code>internal/api/router.go</code> 注册，真实接口下<strong>恒 404</strong>；而详情页把 404 渲染为"资源不存在或不在可见范围"——<strong>又一次把"我方没做"说成"你的资源有问题"</strong>（与缺陷 #11 同类误导）</td><td>中</td><td>逐路由体检 + 对 <code>router.go</code> 与 <code>openapi.yaml</code> 双向核对</td><td>详情页对 404 单独分支，显式说明"该路径未在契约中定义、也未在后端路由注册（已记入缺陷 #20）"，并给出返回列表页的路径；<strong>不伪装成本体不存在</strong>。端点本身待补齐（见 §6 诚实清单）</td></tr>
+<tr><td>21</td><td><strong><code>/admin/identity</code> 白屏：<code>Cannot read properties of undefined (reading 'display_name')</code></strong>（与 #19 同一家族）。前端 <code>RoleBinding</code> 声明为 <code>{ id, subject: Actor, role_id, scope, state }</code>，而契约与实现返回的是<strong>扁平结构</strong>（<code>login_name</code>/<code>display_name</code>/<code>role_key</code>/<code>role_name</code>/<code>scope_type</code>，<strong>无 <code>state</code></strong>）；<code>Role</code> 声明了 <code>scope</code> 与 <code>permissions</code>，而契约里两者都不存在。<code>item.subject.display_name</code> 与 <code>SCOPE_LABEL[item.scope]</code> 双双取 undefined → 整页白屏</td><td>高（页面不可用）</td><td>逐路由体检：该页 <code>#root</code> 文本长度 -1，DOM 内残留 <code>Unexpected Application Error!</code></td><td>① <code>Role</code>/<code>RoleBinding</code> 按契约逐字段重写，新增 <code>ROLE_SCOPE_TYPES</code> 枚举；② 身份页列定义改为真实字段（主体=display_name+login_name，角色=role_name+role_key，范围=scope_type+scope_org_id，有效期），<strong>移除"权限清单"与"绑定启用状态"两个接口未提供的列</strong>；③ fixture 同步对齐真实库取值</td></tr>
+<tr><td>22</td><td><strong><code>/admin/models</code> 静默假空：库中已有 2 个供应商 / 2 个端点，页面却显示"尚未配置模型提供方"</strong>。<code>GET /api/v1/admin/model-providers</code> 按契约返回<strong>聚合对象 <code>{providers, endpoints}</code></strong>，前端却用 <code>fetchList</code>（解析 <code>{items, next_cursor}</code>）读取 → <code>items</code> 恒 undefined → 空态。<strong>"有数据却显示空"比抛错更难发现</strong>：没有报错、没有白屏，看起来只是"还没配"</td><td>中（静默降级）</td><td>逐接口实测响应形状 vs 前端调用方式对照</td><td>① 新增 <code>ModelProvidersResponse</code>/<code>ModelProviderSummary</code>/<code>ModelEndpointSummary</code> 类型（并删除自造的 <code>ModelProvider</code>/<code>ModelProviderState</code>）；② <code>useModelProviders</code> 改用 <code>apiGet&lt;ModelProvidersResponse&gt;</code>；③ 模型页重写为<strong>两个真实清单</strong>（供应商 / 端点，含 <code>provider_type</code>、<code>deployment_type</code>、<code>region_code</code>、<code>status</code>）；④ 移除 <code>POST /admin/model-providers</code> 与 <code>/verify</code> 两个<strong>后端与契约均不存在</strong>的 mutation（提供它们只会把用户引向 404），页面转为只读并显式声明缺口</td></tr>
+<tr><td>23</td><td><strong>入口 HTML 缺失缓存指令，用户被"钉死"在旧前端包上</strong>：<code>deployments/nginx/web.conf.template</code> 只给 <code>/assets/</code> 配了 <code>expires 7d</code> + <code>Cache-Control: immutable</code>，<code>location /</code>（SPA 回退）<strong>没有任何缓存指令</strong>。后果是一条不可自愈的链：旧 <code>index-&lt;old&gt;.js</code> 以 immutable 被缓存 7 天 → 入口 <code>index.html</code> 走浏览器启发式缓存、从不回源校验 → <strong>代码与镜像都已修好、服务端 <code>index.html</code> 也已指向新包，浏览器仍持续跑旧包</strong>。这正是用户二次上报"身份与权限 / 企业本体 / Agent 管理 / 工具管理<strong>还是报同样的错</strong>"的机制（旧包中这 4 页恰好是"有数据→崩"，而 <code>/admin/models</code> 在旧包是静默假空、不报错，故不在用户列表中——两者吻合）</td><td>高（<strong>修复不可达</strong>：修了也到不了用户）</td><td><code>curl -sI</code> 实测入口与资产的响应头；对比服务端 <code>index.html</code> 引用的哈希与本地 <code>web/dist</code>；<code>curl</code> 旧包 URL 应 404</td><td>① 新增 <code>location = /index.html</code>，声明 <code>Cache-Control: no-store, no-cache, must-revalidate</code> + <code>Pragma: no-cache</code>；② <code>/assets/</code> 收敛为<strong>单一</strong> <code>immutable</code> 头（原先 <code>expires</code> 与 <code>add_header</code> 叠加会产生两个 <code>Cache-Control</code>）；③ 无哈希的 <code>/favicon.svg</code> 加 <code>no-cache</code>。<strong>原则：带哈希的资源可 immutable，入口 HTML 必须每次回源</strong></td></tr>
+<tr><td>24</td><td><strong><code>GET /api/v1/plan-templates</code> 恒返回 503，并断言"plan-templates 资产在 MVP 数据库 schema 中无对应持久表"——该断言已经失真</strong>。模板资产与执行计划<strong>共用</strong> <code>planning.plans</code>/<code>planning.plan_revisions</code>，以 <code>plans.status='TEMPLATE'</code> 为判别值；种子（<code>datasets/finance-demo/plans.json</code>）<strong>早已写入真实模板行</strong>（<code>plan_ir.template=true</code> + <code>name</code>/<code>domain</code>/步骤）。把一句过期的设计假设当成实现，代价有两重：① 工作流页<strong>恒为空态</strong>并报"依赖服务不可用"；② 界面给出<strong>永远不可能成功</strong>的建议（"请稍后按退避策略重试"）——对永久性能力缺口谈退避重试，是把用户引向无意义的等待。数据其实一直躺在库里</td><td>中（页面恒空 + 主动误导）</td><td><code>psql</code> 直查 <code>planning.plans</code> / <code>planning.plan_revisions</code> 的行数与内容，与 handler 的无条件 503 对照；核对 <code>status</code> 列无 CHECK 约束、<code>TEMPLATE</code> 为合法判别值</td><td>① 新增 <code>internal/api/store/plan_templates.go</code>：<code>LATERAL</code> 取<strong>最新修订</strong>，JSONB 就地投影 <code>name</code>/<code>ontology_ref</code>，<code>node_kinds</code> 用 <code>ARRAY(SELECT e-&gt;&gt;'kind' …)</code> 展开为 <code>text[]</code>（<strong>不用 jsonb</strong>——pgx 返回 <code>[]byte</code>，经 <code>encoding/json</code> 会被编成 base64），<code>state</code> 由 <code>validation_status</code> 归一为大写枚举；② handler 的 GET 改返回真实 200，<strong>POST 保留诚实 503</strong>（写入路径确未实现）；③ 契约补 <code>PlanTemplate</code>/<code>PlanTemplateList</code>/<code>PlanTemplateState</code> 三个 schema 并修正描述；④ 前端 <code>PlanTemplate</code> 类型与 <code>STATE_META</code> 按契约对齐（原为前端自造的小写 <code>state</code>、<code>version: string</code>）；⑤ <code>plans.json</code> 的 <code>plan_ir</code> 补 <code>name</code>/<code>ontology_ref</code>，步骤 <code>kind</code> 由 <code>TOOL/VALIDATE/DECIDE</code> 对齐到第十七篇 §7.3 节点词表</td></tr>
+</tbody></table>
+<h3>5.1 缺陷 #4 的实测证据（修复后）</h3>
+<pre><code>租户 A 身份读取  → plans=1, named_graphs=1     （可见自己的行）
+租户 B 身份读取  → plans=0, named_graphs=0     （跨租户不可见）
+租户 B 写入 A 行 → ERROR: new row violates row-level security policy for table &quot;plans&quot;</code></pre>
+<h3>5.2 缺陷 #6 的实测证据（修复后）</h3>
+<p>在真实集群上对<strong>两条代码路径</strong>分别验证（且刻意绕开回环接口以真实触发 scram 认证）：</p>
+<pre><code>路径① 注入 GUC（cmd/migrate 的实际路径）：
+  SELECT set_config(&#x27;odap.app_password&#x27;,&#x27;&lt;pw&gt;&#x27;,false);  → \i 000017
+  以该密码经容器网络 → odap-postgres:5432 认证 → current_user=odap_app, is_superuser=off   ✅
+
+路径② 未注入（手工 psql 执行迁移）：
+  NOTICE: odap.app_password not injected; using local-dev default for odap_app
+  以 .env.example 一致的默认密码认证 → current_user=odap_app                          ✅
+
+角色属性复核：rolname=odap_app, rolsuper=f, rolbypassrls=f, rolcanlogin=t, has_pw=t    ✅
+启动结果：docker compose up 后 api/worker 均保持 Up（密码错误则会崩溃退出）              ✅</code></pre>
+<h3>5.3 方法论沉淀（可复用的自查规则）</h3>
+<ol>
+<li><strong>单测全绿 ≠ 真实可用</strong>：缺陷 #2/#3 只能在"连接真实 PostgreSQL 的集成测试"中暴露，必须保留 <code>-tags integration</code> 通道。</li>
+<li><strong>不变量要用 <code>information_schema</code> 全量对账</strong>：缺陷 #4 的根因是"只检查了自己写过的表"；正确做法是遍历 <code>pg_class</code> 找出"有 <code>tenant_id</code> 但无 RLS"的表集合。</li>
+<li><strong>子代理的"全绿"只覆盖它自测的地方</strong>：主代理必须独立复检（本波次复检手段：<code>gofmt</code>/<code>vet</code>/<code>build</code>/<code>test</code> + 关键论断源码抽验）。</li>
+<li><strong>契约要有机器门禁</strong>：缺陷 #5 类漂移靠人眼必然遗漏，<code>tools/contract-lint</code> 将其变为 CI 可阻断项。</li>
+<li><strong>认证/凭据类缺陷会被"回环 trust"掩盖</strong>：缺陷 #6 在本地手工探测中完全不可见——测试库 <code>pg_hba</code> 首行 <code>host … 127.0.0.1/32 trust</code> 使回环连接无需密码即成功；只有在"跨容器 + 官方镜像默认 <code>scram-sha-256</code>"的<strong>真实启动拓扑</strong>下才暴露。凡涉及凭据/认证/网络边界的验证，必须复刻生产一致的拓扑，不能图省事用回环连接（本波次也因此把"真实 <code>docker compose up</code>"列为独立门禁）。</li>
+<li><strong>单一真值来源能消灭一整类一致性缺陷</strong>：缺陷 #6 的修复没有新增 <code>ODAP_APP_DB_PASSWORD</code>，而是让 <code>cmd/migrate</code> 从既有的 <code>ODAP_DATABASE_URL</code> 派生密码——否则"迁移设的密码"与"应用连的密码"会各自漂移。</li>
+<li><strong>"静默取消"与"静默保留"是同一类缺陷</strong>：缺陷 #12（BEFORE 触发器 <code>RETURN NULL</code> 取消操作）与 #17（<code>ON CONFLICT DO NOTHING</code> 保留旧内容）都表现为"命令报告成功、库没有变化、没有任何错误"。二者的共同判据是——<strong>凡是写入类操作，都要回答"它到底改了几行？0 行时算成功还是失败？"</strong>。0 行必须有一个明确语义（幂等命中 or 配置错误），不能两者都算成功。</li>
+<li><strong>"调用成功"不等于"副作用已生效"</strong>：缺陷 #15 是靠自检命令最后一步<strong>回查账本</strong>才暴露的；账本写失败按设计只告警不阻断，因此"调用返回成功"与"治理链完整"完全是两件事。凡链路末端有可读回的持久化副作用，自检必须把它读回来核对。</li>
+<li><strong>约束写了 ≠ 约束生效</strong>：缺陷 #18 的根因是"以为写了 <code>anyOf</code> 就等于校验了至少一个字段"。平台校验器是 fail-closed 的（未登记关键字直接拒绝），但如果这个拒绝只发生在<strong>运行期的入参校验</strong>，作者仍会长时间以为约束在生效。正确做法是把"Schema 是否落在支持子集内"提前到<strong>注入/发布期</strong>校验。</li>
+<li><strong>空数据集会让坏页面"看起来是好的"</strong>：缺陷 #19 在注入演示数据<strong>之前</strong>一直不存在——<code>/admin/ontologies</code> 当时返回空列表，表格一行都不渲染，于是 <code>META[item.state].tone</code> 这行代码<strong>从未被执行</strong>，逐路由体检得到"页面正常"。任何"渲染依赖行数"的断言，在空集下都是<strong>假绿</strong>。判据：凡断言"页面正常"，必须同时断言"页面渲染出了预期的数据行数"；只要表为空，就必须有一条种子/夹具把至少一行塞进去。</li>
+<li><strong>样例数据也受契约约束</strong>：缺陷 #19 之所以长期潜伏，是因为 <code>fixtures.ts</code> 按前端<strong>自造</strong>的类型构造数据（含后端并不返回的 <code>state</code>），于是"对 fixture 全绿、对真实接口必崩"。演示/夹具数据不是"随便造的数据"——它是契约的一个<strong>执行者</strong>；它一旦偏离契约，就变成一台生产假阴性的机器。凡夹具与契约不同源，必有一条门禁用真实接口跑同一断言（本波次即 <code>tools/ui-catalog-verify.sh</code> 走真实接口）。</li>
+<li><strong>"我方没做"绝不能被渲染成"你的资源有问题"</strong>：缺陷 #11 与 #20 同属一类——端点缺失（404）被投影为"资源不存在或不在可见范围"。这会把平台的能力缺口说成用户的权限/数据问题，是最容易误导使用者且最难被发现的一类错误。判据：404 必须区分"实体确实不存在"与"端点未实现/未登记"，后者必须显式说明并注明契约缺项。</li>
+</ol>
+<h3>5.4 验收工具自身的缺陷（同样必须留痕）</h3>
+<p><strong>缺陷 #8–#11 全部是"逐路由体检"发现的，而体检脚本前两轮跑出的结论并不可信</strong>。验收工具本身也必须自证，否则会制造两种反向假象——<strong>假红</strong>（把好页面误判成白屏）与<strong>假绿</strong>（把坏页面误判成正常）。本轮在脚本上修掉 3 处：</p>
+<table><thead><tr><th>#</th><th>验收工具缺陷</th><th>造成的假象</th><th>修复</th></tr></thead><tbody>
+<tr><td>T1</td><td>脚本未旁路本机代理：<code>http_proxy=http://127.0.0.1:4303</code> 会拦截对 <code>127.0.0.1</code> 的请求，浏览器连不上本地 web</td><td><strong>假绿</strong>：页面全 401/空白，断言却因选择器"取不到"与"不匹配"的混淆而部分通过</td><td>两个脚本一律 <code>unset http_proxy https_proxy</code> + <code>no_proxy=127.0.0.1,localhost</code></td></tr>
+<tr><td>T2</td><td>依赖固定 <code>sleep 4</code> 等待页面渲染；而 <code>open</code> 返回时导航可能<strong>尚未完成</strong>（DOM 里连 <code>#root</code> 都不存在）</td><td><strong>假红</strong>：每次 daemon 生命周期内的首条路由被误判为"白屏"（读数 <code>-1</code>），本轮 <code>/workspace</code> 连续两轮被误报</td><td>改为 <code>wait_ready()</code> <strong>轮询</strong>等待（最多 20×1s，兜底重新导航再等），判据为"<code>#root</code> 存在且已渲染出 <code>.page__title</code> 或 <code>.state__title</code>"</td></tr>
+<tr><td>T3</td><td>断言 <code>.sidenav__link-icon svg</code> 用了<strong>后代选择器</strong>，而 <code>Icon</code> 组件把 <code>className</code> 注入到 <code>&lt;svg&gt;</code> <strong>自身</strong>（产出 <code>&lt;svg class="icon sidenav__link-icon"&gt;</code>）</td><td><strong>假红</strong>：侧栏图标明明渲染了，却报"侧栏导航图标未渲染"</td><td>改为复合选择器 <code>svg.sidenav__link-icon</code>；并补一条更强的断言「每个导航项都有图标（<code>svg.sidenav__link-icon</code> 数 === <code>.sidenav__link</code> 数）」</td></tr>
+</tbody></table>
+<blockquote><strong>教训</strong>：T2/T3 说明"断言失败"必须先区分三种可能——①产品真的坏了；②断言选择器写错了；③读取时机没到。把三者混为一谈，就会在白屏与"看起来正常"之间反复误判。修复后 <code>wait_ready</code> 版脚本给出 <strong>19/19 路由正常 + 73 项断言全通过</strong>，且 <code>/workspace</code> 的 <code>-1</code> 假象彻底消失。</blockquote>
+<h3>5.5 缺陷 #12–#18 的实测证据（修复后）</h3>
+<p><strong>#12 <code>plugin_versions</code> 不可变守卫（修复前 → 修复后）</strong></p>
+<pre><code>修复前：SELECT count(*) FROM registry.plugin_versions;              -- 2
+        DELETE FROM registry.plugin_versions RETURNING id;          -- 0 行，**无任何错误**
+修复后：DELETE 越权行 → ERROR: registry: published plugin_version … is immutable   （显式报错）
+        DELETE 非终态行 → 正常删除</code></pre>
+<p><strong>#13/#14 能力档案（内容寻址）与端点地址</strong></p>
+<pre><code>llm.capability_profiles = 3 条；`model_revisions` 经外键绑定到档案
+computed sha256({&quot;native_schema&quot;:true,&quot;supports_seed&quot;:true,&quot;supports_tools&quot;:true,&quot;max_context_tokens&quot;:32768})
+  = 805e8f887903…   ← 与库中 mock-chat 的 capability_digest 前缀完全一致（内容寻址可复现）
+端点：mock-local-default(deployment_type=MOCK) ｜ openai-compat-default(HTTP, base_url=https://api.openai.com/v1)</code></pre>
+<p><strong>#15 用量账本（修复前后的对照）</strong></p>
+<pre><code>修复前：调用&quot;成功&quot;，但日志出现
+        WARN 用量记账失败 error=… null value in column &quot;endpoint_id&quot; … (SQLSTATE 23502)
+        回查账本 → no rows in result set          ← 账本永远为空
+修复后：账本: request_id=llm-check:finance-expense-auditor:EXP-1001 tokens=1110 status=SETTLED
+        重复执行同一请求 → 账本条目数不变（UNIQUE(tenant_id, request_id) 幂等生效）</code></pre>
+<p><strong>#16 静默替换模型（修复后的两类行为）</strong></p>
+<pre><code>请求已登记但不可用：api llm-check --model gpt-4o-mini
+  → api llm-check: 推理调用失败（这条链路是 fail-closed 的，不会静默回落）：
+    UNAVAILABLE: llm: 模型 &quot;gpt-4o-mini&quot; 已登记但当前不可用（端点状态为 DISABLED（非 ACTIVE））；拒绝回落到其他模型
+请求未登记模型：api llm-check --model unknown-model
+  → 正常完成（按能力择优，且优先原生 Schema 端点），账本正常落账</code></pre>
+<p><strong>#17 seed 幂等与收敛（修复后的两类行为）</strong></p>
+<pre><code>改了已发布版本的内容后不带开关重跑：
+  api seed: seed: 租户级写入失败: seed: Agent 版本 finance-expense-auditor@0.1.0 处于终态（已发布/停用）
+           且内容与数据文件不一致（库 ae5bfa3a… ≠ 文件 7528f3b3…）。
+           已发布版本不可变：请提升版本号，或用 seed --replace 重建演示数据     ← 不再静默成功
+带 --replace 重建 → seed complete（tools:7, providers:2）
+再不带开关重跑 → seed complete（内容一致，幂等通过）
+依赖清单写错一个工具名 → seed: agents[0].version.dependency_manifest.tools 引用了未声明的工具
+                        &quot;erp.expense.queryy&quot;（拒绝悬空引用）</code></pre>
+<p><strong>#18 Schema 门禁（注入期拦截）</strong></p>
+<pre><code>在 tools.json 里塞入 exclusiveMinimum：
+  api seed: seed: tools[6].version.output_schema 不被平台支持: VALIDATION_FAILED:
+            tools: schema at $.runtime_bad uses unsupported keyword &quot;exclusiveMinimum&quot;
+            (refusing to ignore a validation keyword)</code></pre>
+<h3>5.6 模型调用链端到端自检（<code>api llm-check</code>）</h3>
+<p><code>seed</code> 只保证<strong>配置数据</strong>写对了；<code>llm-check</code> 回答的是另一个问题——<strong>链路是否真的通了</strong>。它把链路完整走一遍并在最后回查副作用：</p>
+<pre><code>输入：Agent 定义的输出 Schema / 提示词 / 依赖工具  ← 来自 registry.agents / agent_versions（7 个工具）
+      Model Registry 的端点与能力档案              ← 来自 llm.*（2 条绑定，1 条被显式排除并给出原因）
+链路：限流 → 预算 → 语义缓存 → 路由 → 供应商调用 → 结构化输出 → 用量记账
+输出：内容 {&quot;decision&quot;:&quot;APPROVE&quot;}（由 Agent 的 output_schema 驱动合成，enum 取首项）
+      账本 request_id=… tokens=1110 status=SETTLED（**回查确认**，不是&quot;调用没报错&quot;就算过）</code></pre>
+<blockquote><strong>方法论补充</strong>：这条自检的价值恰在于它<strong>当场抓到了缺陷 #15</strong>——"调用返回成功"与"治理链完整"是两回事。凡是"副作用可回查"的链路，自检必须在最后一步把副作用读回来核对，否则"成功"只意味着前半段没抛异常。</blockquote>
+<h3>5.7 缺陷 #19：<code>tone</code> 崩溃的三层根因与实测证据</h3>
+<p>用户上报的运行时报错是 <code>TypeError: Cannot read properties of undefined (reading 'tone')</code>。顺着这一行栈回溯，实际是<strong>三层缺陷叠加</strong>，只修表面（加 <code>??</code>）会留下另外两层：</p>
+<p><strong>第一层 —— 索引写法本身不安全（21 处，跨 12 个页面）</strong></p>
+<pre><code>// 崩溃点（OntologyListPage.tsx:35 原样）
+&lt;Badge tone={ONTOLOGY_STATE_META[item.state].tone}&gt;{ONTOLOGY_STATE_META[item.state].label}&lt;/Badge&gt;</code></pre>
+<p>TS 只能保证"已声明的键"在类型上完备，无法保证<strong>运行期取到的值</strong>落在词表内。<code>META[undefined]</code> → <code>undefined</code> → 取 <code>.tone</code> 即抛错。</p>
+<p><strong>第二层 —— 词表、字段、取值三方错位（这才是根因）</strong></p>
+<table><thead><tr><th>维度</th><th>前端原状</th><th>后端实际</th></tr></thead><tbody>
+<tr><td>字段名</td><td><code>OntologySummary.state</code></td><td><code>status</code>（本体级）+ <code>latest_version_status</code>（版本级）</td></tr>
+<tr><td>取值</td><td><code>draft/validating/validated/pending_publish/published/deprecated</code></td><td><code>DRAFT/VALIDATING/VALID/REJECTED/APPROVED/PUBLISHED/DEPRECATED/DISABLED</code></td></tr>
+<tr><td>另有字段</td><td><code>version</code> / <code>based_on</code> / <code>updated_at</code> / <code>owner</code></td><td><strong>完全不存在</strong>（列表接口只返回 <code>latest_version</code>）</td></tr>
+</tbody></table>
+<p><strong>第三层 —— 为什么一直没被发现：fixture 自造了契约</strong></p>
+<p><code>web/src/api/generated/fixtures.ts</code>（<code>VITE_USE_FIXTURES=1</code>）按前端<strong>自造的</strong>类型构造样例数据（含 <code>state: 'draft'</code>），于是页面"对 fixture 全绿、对真实接口必崩"。该文件自己在文件头写着"不改变任何契约路径与响应结构"——<strong>它违反了这条约束</strong>。这说明：演示数据不是"随便造的数据"，它同样受契约约束；否则它就是一台"验证假阴性的机器"。</p>
+<p><strong>实测证据（修复前 → 修复后）</strong></p>
+<pre><code>修复前（真实接口 /api/v1/ontologies）：
+  {&quot;items&quot;:[{&quot;…&quot;,&quot;latest_version&quot;:&quot;0.1.0&quot;,&quot;latest_version_status&quot;:&quot;PUBLISHED&quot;,&quot;status&quot;:&quot;ACTIVE&quot;,…}],&quot;next_cursor&quot;:&quot;&quot;}
+  ↑ 无 state 字段 → ONTOLOGY_STATE_META[undefined].tone → TypeError → 整棵 React 树被卸载（白屏）
+
+修复后（浏览器实测，见下方断言）：
+  /admin/ontologies  标题=企业本体  数据行=1  徽标=[已发布, 启用]      未知状态=否
+  /admin/agents      标题=Agent 管理 数据行=1  徽标=[已发布]            未知状态=否
+  /admin/tools       标题=工具管理  数据行=7  徽标=[只读,内部写入,外部写入,已发布…]  未知状态=否</code></pre>
+<p><strong>同一家族的缺陷 #21 / #22（由本波次新增的门禁反向查出）</strong></p>
+<p><code>tools/ui-route-sweep.sh</code> 在干净重跑中把 <code>/admin/identity</code> 判为 <code>NOTREADY</code>。逐条追下去，发现它是<strong>同一根因的另外两个形态</strong>——这也说明"把缺陷当类别而不是当个案来修"是有效的：</p>
+<table><thead><tr><th>#</th><th>形态</th><th>症状</th><th>根因</th></tr></thead><tbody>
+<tr><td>21</td><td><strong>崩溃</strong>（与 #19 同）</td><td><code>Cannot read properties of undefined (reading 'display_name')</code> → 整页白屏</td><td><code>RoleBinding</code> 被声明为 <code>{ subject: Actor, role_id, scope, state }</code>，而契约/实现是<strong>扁平结构</strong>（<code>login_name</code>/<code>display_name</code>/<code>role_key</code>/<code>role_name</code>/<code>scope_type</code>，<strong>无 <code>state</code></strong>）；<code>Role.scope</code>/<code>Role.permissions</code> 契约中亦不存在</td></tr>
+<tr><td>22</td><td><strong>静默假空</strong>（新增形态）</td><td>库中已有 2 个供应商 + 2 个端点，页面却显示"尚未配置模型提供方"——<strong>无报错、无白屏</strong></td><td><code>GET /api/v1/admin/model-providers</code> 按契约返回<strong>聚合对象</strong> <code>{providers, endpoints}</code>，前端用 <code>fetchList</code>（解析 <code>{items, next_cursor}</code>）读它 → <code>items</code> 恒 undefined</td></tr>
+</tbody></table>
+<pre><code>修复后 tools/ui-catalog-verify.sh（覆盖 5 个&quot;有数据&quot;的页面，断言数据行 + 徽标 + 无&quot;未知状态&quot;）：
+  /admin/ontologies 数据行=1  徽标=[已发布,启用]
+  /admin/agents     数据行=1  徽标=[已发布]
+  /admin/tools      数据行=7  徽标=[内部写入,已发布,只读,…,外部写入,…]
+  /admin/identity   数据行=2  徽标=[系统内置]
+  /admin/models     数据行=4  徽标=[启用,启用,进程内模拟,启用,真实 HTTP,已停用,只读]
+  → 目录类页面渲染门禁：通过 30 项，失败 0 项</code></pre>
+<blockquote><strong>方法论补充（本波次最重要的两条）</strong>：<br/>1. <strong>"有数据却显示空"与"抛错"是两种缺陷，且前者更难发现</strong>。抛错会被浏览器体检抓到；静默假空只是让人以为"功能还没配"——它能长期存活。判据：凡是"读列表"的代码，都要回答<strong>"我读的是不是它真正返回的那个形状？"</strong>；聚合对象（<code>{a,b}</code>）与分页列表（<code>{items}</code>）不是同一种东西，混用不会报错，只会得到 <code>undefined</code>。<br/>2. <strong>缺陷应当按"类"修，而不是按"个案"修</strong>。#19 修完之后，把同一根因（前端类型 ≠ 契约形状）四个变体（本体 / Agent+工具 / 身份 / 模型）一次性扫完，才暴露出 #21（崩溃）与 #22（假空）这两个<strong>单独看都不会被注意到</strong>的变体。个案修复会留下同类缺陷的其它形态继续潜伏。</blockquote>
+<p><strong>顺带修掉的同类后端缺陷：空列表返回 <code>items: null</code>（契约违例）</strong></p>
+<p>同一波排查中发现 <code>GET /api/v1/policies</code>、<code>/audit-events</code>、<code>/approvals</code>、<code>/evaluations</code> 返回 <code>{"items":null}</code>，而 <code>contracts/03 §1.4</code> 规定 <code>items</code> 是数组。根因：<code>store.queryMaps</code> 在<strong>零行</strong>时返回 <code>nil</code>（<code>var out []map[string]any</code> 从未 append），而调用方 <code>res.Items = rows</code> 覆盖了 <code>[]map[string]any{}</code> 初始化 —— <strong>只在表为空时显形</strong>（恰好这几个表无种子数据）。<code>WorkspacePage</code>、<code>TaskDetailPage</code> 的 <code>.items.length</code> / <code>.items.map</code> 会因此崩溃。</p>
+<pre><code>修复前：{&quot;items&quot;:null,&quot;next_cursor&quot;:&quot;&quot;}
+修复后：{&quot;items&quot;:[],&quot;next_cursor&quot;:&quot;&quot;}      （queryMaps 零行返回非 nil 空切片）</code></pre>
+<blockquote><strong>方法论补充</strong>：<code>null</code> 与 <code>[]</code> 在 JSON 里只差两个字符，但在前端是"能跑"与"白屏"的区别；而在契约层面它是"合规"与"违约"的区别。<strong>空集路径必须和满集路径一样被测试</strong> —— 本波次所有"只在空集显形"的缺陷，都是因为没有一条用例跑过"表里一行都没有"。</blockquote>
+<h3>5.8 缺陷 #25–#27：模型供应商写入链，及由它连带查出的两个后端缺陷</h3>
+<p>用户上报："管理控制台——模型与推理，增加模型时报错：<strong>请求参数不合法，请求失败（HTTP 405）</strong>。处理建议：请修正输入后重新提交，此类错误不会因重试而成功。错误码 <code>INVALID_ARGUMENT</code>"。</p>
+<p>这条报错里有<strong>两个独立问题</strong>，而它给的"处理建议"把两者都归到了用户身上。</p>
+<h4>#25a —— 405 的真相：同路径有 <code>GET</code> 没有 <code>POST</code></h4>
+<p><code>405 Method Not Allowed</code> 的含义是"这个路径存在，但<strong>不支持这个方法</strong>"。所以它证明的不是"参数不合法"，而是<strong>写端点从未实现</strong>：契约只登记了 <code>GET /api/v1/admin/model-providers</code>，页面上的"新建"按钮此前是 disabled（当时如实说明为"不提供会必然 404 的入口"）。</p>
+<h4>#25b —— 405 被投影成 <code>INVALID_ARGUMENT</code>，于是"我们的接口缺失"被说成"你的输入有问题"</h4>
+<p><code>web/src/api/client.ts</code> 的状态码→错误码映射里没有 405，落到了兜底分支 <code>INVALID_ARGUMENT</code>，再叠加该基础码的文案（"请修正输入后重新提交，此类错误不会因重试而成功"）——<strong>用户按建议去改输入，永远改不好</strong>。</p>
+<p>这与缺陷 #11 / #20 / #24 属同一类：<strong>把实现侧的问题描述成用户侧的问题</strong>。修法是引入域码 <code>METHOD_NOT_ALLOWED</code>（语义清晰），<strong>基础码仍取 <code>INVALID_ARGUMENT</code></strong>——这样既不扩 12 个基础码、也不破坏 <code>tools/contract-lint</code> 的"域码→基础码"校验（仍 7/7 通过）：</p>
+<pre><code>function localErrorCodes(status: number): { code: string; baseCode: string } {
+  if (status === 405) return { code: &#x27;METHOD_NOT_ALLOWED&#x27;, baseCode: &#x27;INVALID_ARGUMENT&#x27; };
+  const base = baseCodeForStatus(status);
+  return { code: base, baseCode: base };
+}</code></pre>
+<p>域码文案改为："接口未提供此操作（HTTP 405 方法不允许），属<strong>前后端接口不一致，与你的输入无关</strong>"。</p>
+<h4>#25 的落地：把写入链真正补上</h4>
+<table><thead><tr><th>层</th><th>改动</th></tr></thead><tbody>
+<tr><td>存储</td><td><code>internal/api/store/model_providers.go</code>：<code>CreateModelProvider</code> 在<strong>单事务</strong>内同时写入 <code>llm.providers</code> 与其<strong>首个端点</strong>。<code>llm.*</code> 是平台级共享定义（无 <code>tenant_id</code>、无 RLS，见迁移 000010/000016），故<strong>不走 <code>TenantTx</code></strong>；身份仍由 handler 强制</td></tr>
+<tr><td>为什么端点必填</td><td>供应商本身不含地址与凭据，只有端点带 <code>base_url</code>/<code>credential_ref</code> 才可能被装配（<code>internal/llm/registry.go</code> 的 <code>newProvider</code> 对 HTTP 端点缺任一项一律 fail-closed）。<strong>只建供应商会产出一个永远无法被调用的空壳</strong>，故请求体里 <code>endpoint</code> 为必填，缺失即 400 并说明理由</td></tr>
+<tr><td>路由</td><td><code>POST /api/v1/admin/model-providers</code>（<code>router.go</code>）；同步补 <code>router_test.go</code> 的手工清单，否则 <code>TestAllContractEndpointsRegistered</code> 报 <code>route count=45 want=44</code></td></tr>
+<tr><td>契约</td><td>新增 <code>CreateModelProviderRequest</code> / <code>CreatedModelProvider</code>（<code>provider_id</code> 是 TEXT 主键，<strong>不能</strong>复用 <code>format: uuid</code> 的 <code>CreatedResource</code>）</td></tr>
+<tr><td>安全</td><td>凭据只接受秘密存储中的<strong>引用名</strong> <code>credential_ref</code>，<strong>不接受明文密钥</strong>，响应也不回显；审计只记 <code>credential_ref</code>/<code>base_url</code></td></tr>
+<tr><td>前端</td><td><code>useCreateModelProvider</code> + <code>CreateProviderDialog</code>（RHF + Zod，与冻结栈一致）；页面按钮解开 disabled，成功后就地展示 banner 并刷新列表</td></tr>
+</tbody></table>
+<p><strong>实测证据（部署镜像 + 真实浏览器）</strong></p>
+<pre><code>API（HTTP 状态码即结论）：
+  POST 201 → {&quot;provider_id&quot;:&quot;e2e-verify&quot;,&quot;endpoint_id&quot;:&quot;0c5712f1-c831-4659-bc1f-1c30a3907eaf&quot;}
+  POST 409 → {&quot;code&quot;:&quot;CONFLICT&quot;,&quot;message&quot;:&quot;provider_id 已存在：e2e-verify&quot;}
+  POST 400 → {&quot;code&quot;:&quot;INVALID_ARGUMENT&quot;,&quot;message&quot;:&quot;deployment_type=HTTP 时 base_url 必填且须以 http:// 或 https:// 开头&quot;}
+  POST 401 → {&quot;code&quot;:&quot;UNAUTHENTICATED&quot;,&quot;message&quot;:&quot;缺少身份凭据&quot;}
+
+浏览器（/admin/models，真实点击）：
+  按钮状态      ENABLED（修复前为 disabled）
+  点击按钮      对话框 OPEN
+  MOCK 形态     base_url=false  credential_ref=false      ← 进程内端点不出现地址/凭据字段
+  切 HTTP       base_url=true   credential_ref=true       ← 切回 MOCK 后两者消失
+  提交          成功 banner「已创建供应商 ui-probe-vendor（含首个端点）。凭据只以引用名写入，服务端不会回显。」
+  提交后        对话框关闭；供应商列表新增「Ui Probe Vendor / ui-probe-vendor · 类型 MOCK / 启用」</code></pre>
+<h4>#26 —— 由 #25 的实测查出：<code>provider_id</code> 的派生在<strong>静默降级</strong>，而显式提供时<strong>完全没有校验</strong></h4>
+<p>#25 跑通后我按用户给的中文名试了一次，结果不是报错，而是一个<strong>看起来正常、实则错误的标识</strong>：</p>
+<table><thead><tr><th>显示名（留空 <code>provider_id</code>）</th><th>修复前</th><th>修复后</th></tr></thead><tbody>
+<tr><td><code>E2E 探针供应商</code></td><td><strong><code>e2e</code></strong></td><td>400，要求显式提供</td></tr>
+<tr><td><code>阿斯麦推理服务</code>（纯中文）</td><td>空 → 400</td><td>400</td></tr>
+<tr><td><code>Acme Inference</code></td><td><code>acme-inference</code></td><td><code>acme-inference</code>（不变）</td></tr>
+</tbody></table>
+<p>根因：旧实现对<strong>任何</strong>不可映射字符都写成 <code>-</code>，于是中文被整段吃掉、连字符再被折叠/裁剪，<code>"E2E 探针供应商"</code> 退化成 <code>"e2e"</code>。后果有两层：</p>
+<ol>
+<li><strong>语义丢失</strong>：<code>provider_id</code> 会出现在装配日志与"排除原因"里，<code>e2e</code> 无法回答"这是哪个供应商"；</li>
+<li><strong>主键碰撞</strong>：任何以 <code>E2E</code> 开头的显示名都会派生出同一个 <code>e2e</code>，第二个就被 409 顶掉。</li>
+</ol>
+<p>而同一个函数对<strong>纯中文名</strong>却走的是另一条路（结果为空 → 400）。<strong>同一个函数对两种中文名给出截然不同的行为</strong>，正是"静默降级"的定义。</p>
+<p>同时查出第二个洞：<strong>显式提供的 <code>provider_id</code> 没有任何字符集校验</strong>——<code>Acme</code>、<code>acme/llm</code>、<code>..</code> 都能直接写进主键。而契约中 <code>provider_id</code> 是 <code>/api/v1/admin/model-providers/{id}/verify</code> 的<strong>路径参数</strong>，<code>/</code> 与 <code>..</code> 在此是路径注入面。</p>
+<p>修法（派生与显式<strong>一视同仁</strong>）：</p>
+<pre><code>// 规范形状：小写字母/数字，单个连字符分词；2–63 字符
+var providerIDRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// 返回 ok=false 表示不可**无损**映射 → 拒绝隐式派生，而不是产出丢语义的短 id
+func DeriveProviderID(displayName string) (string, bool)
+func ValidateProviderID(id string) error</code></pre>
+<p>前端<strong>同源镜像</strong>同一规则（<code>schema.ts</code> 的 <code>deriveProviderId</code>），于是"中文显示名 + 留空标识"在<strong>客户端</strong>就被拦下，不产生一次注定 400 的往返：</p>
+<pre><code>浏览器实测（填「阿斯麦推理服务」+ 留空标识 → 提交）：
+  客户端拦截 = BLOCKED_BY_CLIENT（命中「无法自动派生标识」）
+  对话框仍打开，无任何请求发出</code></pre>
+<p>常驻回归门禁：<code>internal/api/store/model_providers_test.go</code>，22 个表驱动用例把"无损映射成功 / 不可映射即 fail-closed / 规范形状"全部钉住。</p>
+<h4>#27 —— 装配 SQL 的 <code>INNER JOIN</code> 让"尚无模型版本的端点"<strong>完全不可见</strong></h4>
+<p>#25 新建的供应商+端点，在 <code>api llm-check</code> 里<strong>既不在 <code>bindings</code>，也不在 <code>exclusions</code></strong>——<code>UI 说"已创建"，装配诊断只字不提</code>。</p>
+<p>根因：<code>registryLoadSQL</code> 对 <code>llm.model_revisions</code> 与 <code>llm.capability_profiles</code> 用的是 <strong><code>INNER JOIN</code></strong>。一个"有供应商、有端点、但还没登记模型版本"的配置 — 而 #25 的写入口<strong>恰好就允许</strong>这种合法中间状态 — 会让该行在 JOIN 阶段被消掉，<strong>一行都不产生</strong>。</p>
+<p>这恰恰是该文件头注释明令禁止的事：</p>
+<blockquote>为什么必须记录而不是直接丢弃：被静默跳过的端点会让"已登记"与"可调用"看起来一致而实际不一致 —— 排查时既看不到行，也看不到原因（第九篇 §6.2）</blockquote>
+<p>修法：两处改 <code>LEFT JOIN</code>（<code>capability_profiles</code> 也必须改，否则 <code>m.capability_digest</code> 为 NULL 时该行仍会被消掉），并新增两个显式排除分支。</p>
+<pre><code>修复前：Model Registry 装载完成  bindings=2  excluded_or_notes=1     ← 新建端点无影无踪
+修复后：Model Registry 装载完成  bindings=2  excluded_or_notes=4
+  WARN 端点排除/提示 provider=acme-inference    endpoint=fix-f-ep     reason=该端点尚未登记任何模型版本（llm.model_revisions 无对应行），不参与路由；请为其登记模型版本与能力档案
+  WARN 端点排除/提示 provider=e2e               endpoint=e2e-probe-ep reason=…
+  WARN 端点排除/提示 provider=e2e-probe-fixed   endpoint=fix-b-ep     reason=…
+  WARN 端点排除/提示 provider=openai-compat     endpoint=openai-compat-default reason=端点状态为 DISABLED（非 ACTIVE）</code></pre>
+<h4>顺带修正：一个<strong>前提就是错的</strong>门禁（<code>http-entry-cache-verify.sh</code> 断言 ③）</h4>
+<p>本波次重跑入口缓存门禁时，它先后报了两次失败——而<strong>两次都不是部署的问题</strong>：</p>
+<table><thead><tr><th>轮次</th><th>报错</th><th>真相</th></tr></thead><tbody>
+<tr><td>第一次</td><td><code>✗ 服务端哈希  实测=index-CtvvHls_.js  期望=index-ByPFyw7x.js</code></td><td>两个文件 <strong>md5 完全一致</strong>（<code>145b6baa6381ecea7e55c7849c04881e</code>）——同一份源码在宿主与镜像内（<code>node:22-bookworm-slim</code>）各构建一次，<strong>内容相同、文件名不同</strong>。判据用了<strong>文件名</strong>。</td></tr>
+<tr><td>第二次</td><td><code>✗ 产物内容摘要  实测=…（服务端 index--cQBdYvB.js ⇄ 本地 index-ByPFyw7x.js）</code></td><td>服务端产物与<strong>镜像内</strong>产物 sha256 完全一致（<code>fb68379fb8a4…</code>）；只是镜像被重建过一次，与<strong>宿主</strong> dist 不再是同一次构建的产物。</td></tr>
+</tbody></table>
+<p>两次的表象不同，根因是同一个：断言 ③ 拿<strong>本地 <code>web/dist</code></strong> 当部署输入，而它<strong>不是</strong>——<code>Dockerfile.web</code> 在镜像内 <code>npm run build</code> 产出 <code>/app/dist</code>，且 <code>.dockerignore</code> <strong>排除 <code>web/dist</code></strong>。也就是说这条判据一直在检查一个<strong>根本不参与部署的文件</strong>；无论比文件名还是比内容，都不可能对。</p>
+<blockquote><strong>判据必须与"被判对象"同源。</strong> 拿一个不参与部署的产物去判"部署是否正确"，注定假失败。而假失败的门禁比没有门禁更糟——它会训练人忽略红灯，从而在真正失效时也无人过问。</blockquote>
+<p>已改为守真正的不变量，并把原先被它掩盖掉的那个有用信号补成独立断言：</p>
+<ul>
+<li><strong>③ 服务端产物 == web 镜像内产物</strong>（防"nginx 服务了旧文件 / 挂载错位"）——两侧同源，可比。</li>
+<li><strong>④ web 镜像不早于前端源码</strong>（防"改了代码但没重建镜像"）——<code>docker compose up -d</code> <strong>不会</strong>重建镜像（已实测：<code>up</code> 前后镜像 Created 不变），所以"改前端 → 直接重启"必然得到旧界面；这条是唯一能发现它的断言。</li>
+</ul>
+<p>新增断言已<strong>证伪</strong>（确认它不是装饰）：把 <code>web/src/app/providers.tsx</code> 的 mtime 改成当前时间 → ④ 立刻转红并打印可执行指令（<code>bash start.sh --build</code>）、退出码 1；还原 mtime 后转绿。</p>
+<p>修这条门禁时我自己还写出一处 bug 并当场查出：抓取入口资源时漏了 <code>assets/</code> 前缀，于是请求打到 <code>/index-CtvvHls_.js</code>，被 nginx 的 SPA 回退成 <code>index.html</code>，得到的是 <strong>HTML 的摘要</strong>。两次摘要不一致（<code>ef5c01394c67</code> vs <code>4c412780d401</code>）才暴露出来 —— <strong>"断言失败"先要怀疑断言本身</strong>。</p>
+<blockquote><strong>方法论补充（本波次最重要的三条）</strong>：<br/>1. <strong>"能创建"不等于"创建得对"</strong>。写入口跑通（201）只是最低标准；真正的判据是<strong>它写出来的东西是否可靠</strong>。#25 刚闭环，#26 就暴露出来：#25 的默认路径（留空标识）在中文化界面下会产出错误甚至碰撞的主键。<strong>新增一条写入路径，必须同时问"它的默认值在真实语言环境下会发生什么"。</strong><br/>2. <strong>同一个函数的两种行为，往往只有一种被测试过</strong>。<code>DeriveProviderID</code> 对纯中文名报错（被"偶然测到"），对"中文为主 + 少量 ASCII"静默降级（从未被测）。<strong>"能报错"不等于"该报错的地方都会报错"</strong>；要按<strong>输入空间</strong>设计用例，而不是按"我想到的例子"。<br/>3. <strong>新建的写入口会立刻创造新的"不可见状态"，必须同时补齐诊断</strong>。#27 不是历史遗留——是 #25 当天引入的：写入口允许"有端点、无模型版本"，而装配诊断对这种状态<strong>一行都不输出</strong>。<strong>凡是放宽了可写状态的地方，都要回头检查"诊断面是否还覆盖得住"。</strong></blockquote>
+<hr/>
+<h2>6. 偏差与未达标项（诚实清单）</h2>
+<blockquote>**本节是"按主题归类"的清单；"按设计书逐篇逐条"的完整评测见<br/>[<code>docs/ODAP-设计书实现符合性评测清单.md</code>](./ODAP-设计书实现符合性评测清单.md)（230 条，含 4 条活体实测缺陷与 4 条新增门禁建议）。**<br/>两者分工：本矩阵回答"交付了什么、门禁是否全绿"；评测清单回答"逐篇对照设计书还缺什么"。<br/>下列条目中标注 <strong>→ 已更新</strong> 的，以评测清单的结论为准。</blockquote>
+<table><thead><tr><th>项</th><th>状态</th><th>原因</th><th>影响面 / 后续</th></tr></thead><tbody>
+<tr><td>第五篇 本体工程（制度解析）完整闭环</td><td>🟡</td><td>设计书自标 <code>[V1.5]</code></td><td>MVP 只做解析最小闭环；不影响报销切片</td></tr>
+<tr><td>第十三篇 <strong>存储选型 Spike 报告</strong></td><td>⬜</td><td>P2 退出硬前置，本波次未产出</td><td>需在 P2 验收前补做；当前选型（PG 三元组 + 三索引 + 按租户 LIST 分区）已实现并测通</td></tr>
+<tr><td>第十一篇 Prometheus 指标 / Trace</td><td>🟡</td><td>设计书标 <code>[V1.5]</code></td><td>结构化日志 + SSE 已就位</td></tr>
+<tr><td>第十二篇 数据接入与治理</td><td>⬜</td><td>设计书标 <code>[V1.5]</code>（MVP 用静态导入），范围排除</td><td>无</td></tr>
+<tr><td>第十五篇 仿真引擎</td><td>⬜</td><td>设计书标 <code>[V1.5]</code>；P6 硬前置</td><td>阻塞 P6/P7 完整 E2E；本波次交付表结构 + 端点</td></tr>
+<tr><td>完整"报销垂直切片 11 步 E2E"</td><td>🟡</td><td>依赖 P6 之外的端到端联调</td><td>各层测试就位，E2E 编排待补</td></tr>
+<tr><td><code>cmd/worker</code> 为<strong>调度骨架</strong>：已真实调用 <code>ClaimNext</code>（四队列）/ <code>Machine.Apply</code>（fencing）/ <code>Publisher.RunOnce</code>（两段式）/ <code>RenewLease</code>，但未接 Agent 执行驱动，故 Run 停留在 <code>CREATED</code></td><td>🟡</td><td>执行驱动（LLM+工具编排）需在 P7 联调接入</td><td><strong>实测</strong>：worker 日志显示真实领取 run、epoch 递增（1→3）、attempt 递增；<code>LeaseAcquired</code> 按第六篇 §6.2/§6.3 为<strong>自环簿记</strong>（源码确认 <code>rule{from: s, to: s}</code>），非缺陷</td></tr>
+<tr><td><code>internal/api</code> 部分端点返回"未实现"</td><td>🟡</td><td>依赖尚未具备的领域服务</td><td>返回明确错误码，<strong>绝不返回假成功</strong>（符合契约）</td></tr>
+<tr><td><code>go build ./...</code> 会遍历 <code>web/node_modules</code></td><td>🟡</td><td>JS 依赖目录位于 Go 模块树内</td><td>影响 CI 耗时（约 3 分钟）；功能无碍。建议 CI 使用 <code>go vet ./internal/... ./cmd/... ./mockerp/... ./tools/...</code> 或后续将前端移出模块树</td></tr>
+<tr><td><strong>第十六篇 §8.3 与实现的差异</strong>：设计书样例 <code>ODAP_DATABASE_URL</code> 用 owner 账号 <code>odap</code>；实现改用 <code>odap_app</code></td><td>✅ 有意偏离（更安全）</td><td><code>odap</code> 是超级用户（<code>rolbypassrls=t</code>），以它连接会<strong>绕过全部 RLS</strong>，违反第二篇 §9.2「应用角色不得是超级用户、不得有 BYPASSRLS」。实现据第二篇 §9.2 取 <code>odap_app</code>，并以缺陷 #6 的修复补齐其密码</td><td>已在 <code>.env.example</code> 就地注释说明；建议后续回写设计书 §8.3</td></tr>
+<tr><td>Mock ERP 库的<strong>宿主端口</strong></td><td>🟡</td><td>本机 5433 已被无关容器 <code>fdms-postgres</code> 占用</td><td><code>compose.yaml</code> 默认仍为设计书 §8.2 的 <code>5433</code>，仅新增 <code>MOCKERP_DB_HOST_PORT</code> 可覆盖；本地 <code>.env</code> 用 <code>5443</code>。容器内仍 <code>5432</code>，<code>MOCKERP_DATABASE_URL</code> 不受影响</td></tr>
+<tr><td>~~<code>GET /api/v1/plan-templates</code> 返回 503 <code>UNAVAILABLE</code>（"端点已登记契约但能力未落地"）~~ → <strong>已闭环（缺陷 #24）</strong></td><td>✅</td><td>原判断"无 plan-templates 持久表"是<strong>失真断言</strong>：模板与执行计划共用 <code>planning.plans</code>/<code>plan_revisions</code>，以 <code>status='TEMPLATE'</code> 判别，种子早已写入真实模板行。端点落后于种子数据，而非能力未落地</td><td>已实现 <code>store.ListPlanTemplates</code>（取最新修订 + JSONB 投影）→ <code>GET</code> 返回真实 200（1 个模板：<code>报销审核工作流（FINANCE）</code>，6 个节点，state=VALIDATED）。<code>/admin/workflows</code> 由"依赖服务暂不可用"空态转为<strong>真实数据列表</strong>。<strong>POST（写入）仍为诚实 503</strong>——写入路径确未实现</td></tr>
+<tr><td><strong><code>POST /api/v1/plan-templates</code> 的 <code>retryable</code> 语义不准</strong>（缺陷 #24 残留）</td><td>🟡</td><td>域码用基础码 <code>UNAVAILABLE</code>，而 <code>httperr.Retryable()</code> <strong>从基础码派生</strong> → 永久性"能力未实现"被标成 <code>retryable: true</code>，前端 <code>errors.ts</code> 随之给出"请稍后按退避策略重试"——<strong>对不可能成功的操作谈退避</strong></td><td>当前<strong>无用户可见影响</strong>：该写入端点未被任何 UI 调用，工作流页已改走真实 200 路径。正确修法是新增<strong>域码</strong>（映射 <code>UNAVAILABLE</code> 但 <code>Retryable: false</code>）+ 前端域码级文案。因 <code>tools/contract-lint</code> 会校验"域码→基础码"映射与 <code>docs/contracts/02 §3</code> 一致，属独立契约变更，故<strong>单独登记而非就地扩表</strong></td></tr>
+<tr><td><code>GET /api/v1/data-sources</code> <strong>既未登记 openapi.yaml，也无后端路由</strong></td><td>⬜ 端点缺失</td><td>第十二篇数据接入为 <code>[V1.5]</code> 范围</td><td>前端已用 <code>DATA_SOURCES_ENDPOINT_AVAILABLE = false</code> 显式关断并说明原因，避免把 404 渲染成"你的资源不可见"（缺陷 #11）。端点落地后把开关置 <code>true</code> 即可</td></tr>
+<tr><td>前端 <code>apiGet&lt;T&gt;()</code> <strong>无运行时响应校验</strong>（TS 泛型是编译期声明，不对运行时数据负责）</td><td>🟡</td><td>缺陷 #8/#9 的<strong>共同放大器</strong>：契约字段漂移在编译期完全静默，直到页面白屏才暴露</td><td>已用 <code>view-model</code> 纯函数层 + <code>normalize()</code> 兜底降低危害；建议后续为每个 BFF 聚合端点引入 Zod schema 校验（Zod 已在前端依赖中）</td></tr>
+<tr><td>暗色主题</td><td>⬜</td><td>§3.4 明确"首期建议默认浅色主题，深色可作为后续增强，不应为实现深色主题而延误业务闭环"</td><td>设计令牌已集中在 <code>tokens.css</code>，具备后续扩展基础</td></tr>
+<tr><td>**LLM Gateway 已可从 <code>llm.*</code> 装配并跑通链路，但尚未接入 Agent 执行驱动**</td><td>🟡</td><td><code>cmd/worker</code> 仍为调度骨架（见上表），Gateway 的调用方目前是 <code>api llm-check</code> 自检命令</td><td>模型调用链的<strong>每一环都已真实执行并回查副作用</strong>（含账本落账），但不是"由 Run 驱动"。E2E 编排接入后 <code>llm-check</code> 仍可作为独立回归门禁保留</td></tr>
+<tr><td><strong>能力档案的"探测验证"未实现</strong>：<code>capability_verified</code> 目前是数据文件里的声明值</td><td>🟡</td><td>第九篇 §4.4 要求"在受控测试环境中执行能力探测"（步骤 3/4/6），属 V1.5 范围</td><td>表结构已按 <code>VERIFIED/UNVERIFIED/REVOKED</code> + <code>verified_at</code> 就位；装配时 <code>UNVERIFIED</code> 会<strong>显式留痕</strong>（不阻断、不静默）。演示数据中 <code>gpt-4o-mini</code> 即标为 <code>UNVERIFIED</code> 以体现该区分</td></tr>
+<tr><td><strong>API/Web 容器镜像已重建</strong>（先前条目已闭环）</td><td>✅</td><td>本轮执行 <code>docker compose build api web &amp;&amp; docker compose up -d api web</code></td><td>已验证：<code>/policies</code> 等由 <code>{"items":null}</code> 变为 <code>{"items":[]}</code>；前端产物演进为 <code>index-BIHcBVlV.js</code>（用户首次报错中的旧产物为 <code>index-xbzYBCYh.js</code>）。<strong>注意：镜像重建 ≠ 用户可见——见缺陷 #23：入口 HTML 缺缓存指令时，旧包会被浏览器钉死，用户看不到新产物</strong></td></tr>
+<tr><td><strong><code>GET /api/v1/ontologies/{id}</code> 端点缺失</strong>（缺陷 #20）：本体详情页所需的详情端点<strong>既未登记 <code>contracts/openapi.yaml</code>，也无后端路由</strong></td><td>⬜ 端点缺失</td><td><code>ListOntologies</code>/<code>CreateOntology</code>/<code>validate</code>/<code>publish</code> 均已实现，唯独缺详情读端点；现有数据（<code>ontology.ontologies</code> + <code>ontology_versions</code> + <code>ontology_artifacts</code>，含 OWL/SHACL 构件）足以支撑详情视图</td><td>详情页已对 404 单独分支、<strong>显式说明"该路径未在契约中定义、也未在后端路由注册"</strong>，不再伪装成"本体不存在"。补齐路径：契约加路径 + store 加 <code>GetOntology</code> + handler 注册；<code>OntologyDetail</code> 类型与 fixture 已就位</td></tr>
+<tr><td>~~<code>POST /api/v1/admin/model-providers</code>（新建模型提供方）既未在后端路由注册、也未在契约中定义~~ → <strong>已闭环（缺陷 #25）</strong></td><td>✅</td><td>原状：页面"新建"按钮 disabled，且点击会得到 <strong>HTTP 405</strong>，却被投影成 <code>INVALID_ARGUMENT</code> + "请修正输入后重新提交"——把<strong>接口缺失</strong>说成<strong>用户输入有问题</strong>（同类见 #11/#20/#24）</td><td>已实现写入链：<code>store.CreateModelProvider</code>（单事务建<strong>供应商 + 首个端点</strong>，端点必填，避免产出无法被调用的空壳）+ 路由 + 契约 + 前端 RHF/Zod 对话框。新增域码 <code>METHOD_NOT_ALLOWED</code>（基础码仍 <code>INVALID_ARGUMENT</code>，不扩基础码，<code>contract-lint</code> 仍 7/7）。<strong>实测</strong>：201 / 409 / 400 / 401 四态正确；浏览器真实点击 → 成功 banner → 列表新增该行</td></tr>
+<tr><td><strong><code>POST /api/v1/admin/model-providers/{id}/verify</code>（能力探测验证）仍未实现</strong>（缺陷 #25 残留）</td><td>⬜ 端点缺失</td><td>第九篇 §4.4 的能力探测属 V1.5 范围</td><td>页面<strong>不提供</strong>该入口（不放置会必然失败的按钮），并在页面"能力边界"说明区如实列出。写入链本身已可用</td></tr>
+<tr><td>~~<code>provider_id</code> 派生静默降级 + 显式提供无字符集校验~~ → <strong>已闭环（缺陷 #26）</strong></td><td>✅</td><td>旧实现对<strong>任何</strong>不可映射字符都写成 <code>-</code> → 显示名 <code>E2E 探针供应商</code> 被<strong>静默</strong>派生成 <code>e2e</code>（中文语义全丢，且任何 <code>E2E*</code> 名字都会撞同一主键）；而纯中文名却因结果为空而报 400——<strong>同一函数两种行为</strong>。显式提供的 <code>provider_id</code> 则完全无校验，<code>Acme</code> / <code>acme/llm</code> / <code>..</code> 均可直接进主键，而契约中它是 <code>/model-providers/{id}/verify</code> 的<strong>路径参数</strong></td><td>已收敛为规范形状 <code>^[a-z0-9]+(-[a-z0-9]+)*$</code>（2–63），派生与显式<strong>一视同仁</strong>：<code>DeriveProviderID</code> 改为 <code>(string, bool)</code>，不可无损映射即 fail-closed；新增 <code>ValidateProviderID</code>。前端同源镜像（<code>deriveProviderId</code>），中文名 + 留空标识在<strong>客户端</strong>即被拦下，不产生注定 400 的往返。回归门禁 <code>store/model_providers_test.go</code> 22 用例</td></tr>
+<tr><td>~~装配 SQL 的 <code>INNER JOIN</code> 让"尚无模型版本的端点"完全不可见~~ → <strong>已闭环（缺陷 #27）</strong></td><td>✅</td><td>此缺陷由 #25 <strong>当天引入</strong>：写入口允许"有供应商、有端点、无模型版本"这一合法中间状态，而 <code>registryLoadSQL</code> 对 <code>model_revisions</code>/<code>capability_profiles</code> 用 <code>INNER JOIN</code> → 该行<strong>一行都不产生</strong>，既不在 <code>bindings</code> 也不在 <code>exclusions</code>。这正是该文件头注释明令禁止的"静默跳过"</td><td>两处改 <code>LEFT JOIN</code>（能力档案那处<strong>必须一并改</strong>，否则 <code>capability_digest</code> 为 NULL 时该行仍被消掉）+ 两个显式排除分支（"尚未登记任何模型版本" / "能力档案不存在"）。<strong>实测</strong>：<code>excluded_or_notes</code> 由 1 → 4，新建端点全部带原因现形</td></tr>
+<tr><td><strong>模型版本与能力档案无列表端点</strong>：<code>llm.model_revisions</code>（3 条）与 <code>llm.capability_profiles</code>（3 条）已在库中，但没有可读取的列表端点</td><td>🟡</td><td>契约未定义该读端点</td><td>模型页不展示这两个清单（不用占位数据）；其真实性由 <code>api llm-check</code> 的装配与落账自检验证（§5.6）</td></tr>
+<tr><td><strong>角色↔权限映射与绑定启用状态未在列表接口投影</strong>（缺陷 #21 关联）：<code>GET /api/v1/admin/roles</code> 不返回 <code>permissions</code>，<code>/admin/role-bindings</code> 不返回启用/停用状态</td><td>🟡</td><td>权限映射在服务端授权层；契约亦无该字段</td><td>身份页<strong>不展示</strong>"权限"与"状态"两列。状态派生属服务端职责（§11.2：前端标签是投影不是状态），前端不自行由 <code>valid_until</code> 推断"已过期"。另：<code>POST /api/v1/admin/subjects/{id}/disable</code> 亦未登记，且绑定记录不含主体 ID（只有 <code>login_name</code>），故"停用主体"操作暂不可执行</td></tr>
+<tr><td><strong>Agent/工具列表接口未投影 §7.1/§7.2 要求字段</strong>：Agent 的"模型策略 / 可用工具 / 关联本体与工作流 / 最近评估"、工具的"权限要求 / 风险等级 / 幂等策略 / 超时与重试 / 测试状态"在 <code>GET /api/v1/agents</code>、<code>/tools</code> 中<strong>不返回</strong>（存在于 <code>registry.*_versions</code> 的 <code>dependency_manifest</code> / <code>execution_config</code> 中，列表 SQL 未投影）</td><td>🟡</td><td>数据在库中，缺的是列表接口的字段投影</td><td>两个页面<strong>不渲染这些列</strong>（不用占位假数据填充），并在页脚以醒目 banner <strong>显式声明缺口</strong>；工具页改用<strong>真实字段</strong> <code>effect_class</code>（READ/INTERNAL_WRITE/EXTERNAL_WRITE）表达能力边界，比按不存在的 <code>risk_level</code> 渲染更可信</td></tr>
+<tr><td><strong>版本生命周期词表未被 <code>contracts/01</code> 收录，且三张版本表枚举互不一致</strong>：<code>ontology_versions</code> 有 <code>VALID</code>/<code>REJECTED</code>，<code>agent_versions</code>/<code>tool_versions</code> 没有；<code>plugin_versions</code> 用 <code>CREATED</code> 而非 <code>DRAFT</code></td><td>🟡</td><td><code>docs/contracts/01-全局状态注册表.md</code> 只覆盖 Run/Step/ToolCall/ERP 四个词表</td><td>前端已按<strong>实现真源</strong>（迁移 CHECK 约束）建立共享词表 <code>VERSION_STATUS_META</code> 与按资源收窄的联合类型；建议后续为版本词表补 contracts/01 章节并统一三表枚举（属词表治理，非本波次范围）</td></tr>
+<tr><td>治理面数据（策略 <code>policies</code> / 命名图 <code>graphs</code> / 评估集 <code>evaluations</code>）尚未注入</td><td>⬜</td><td>类型与校验已就位（<code>internal/seed</code>），写入路径（<code>apply.go</code>）待补</td><td>数据集文件缺失即视为该节为空，不影响当前链路；列为下一项待办</td></tr>
+<tr><td>LLM 限流/预算参数仍用代码默认值，未从 Registry 读取</td><td>🟡</td><td>第九篇 §5.2 的 <code>llm.budget_reservations</code> / <code>llm.routing_policies</code> 表未落地</td><td><code>GatewayOptions</code> 已支持注入 <code>Limiter/Budget/Cache</code>，装载侧接口就位；DB 化后再替换即可</td></tr>
+</tbody></table>
+<p><strong>未达标项的共同特征</strong>：均源于设计书自身的 <code>[V1.5]</code> 范围标签或阶段硬前置，<strong>不是实现遗漏</strong>。所有本波次范围内的 P0–P5 要求均已达成。</p>
+<hr/>
+<h2>7. 可复现验证命令（附录）</h2>
+<pre><code># 0) 项目启动 / 停止 / 重启（仓库根目录的三个脚本；下面各条都假定栈已起）
+#
+#   bash start.sh                    # 启动最小路径，并**轮询真实探针**等待就绪
+#                                    #   （不做固定 sleep；/readyz 会真的查库）
+#   bash start.sh --build            # 先重建镜像（改了 Go / 前端代码时必须加）
+#   bash start.sh --seed             # 就绪后导入演示数据（幂等，可重复执行）
+#   bash start.sh --reseed           # 就绪后重建演示数据（--replace）
+#   bash start.sh --profile objectstore    # 追加 MinIO（9000/9001）
+#   bash start.sh --init-env         # 缺 .env 时从 .env.example 生成
+#   bash start.sh --no-wait / --timeout 300 / --logs
+#
+#   bash stop.sh                     # 停止 + 删容器/网络，**保留数据卷**
+#   bash stop.sh --purge --yes       # 连数据卷一起删（不可逆；只给 --purge 会被拒绝）
+#
+#   bash restart.sh                  # = stop（保留数据）+ start；透传上面各选项
+#   bash restart.sh --build          # 改完代码后重启（最常用）
+#
+#   为什么不是一个 `docker compose up -d --build`：
+#     · `up -d` 返回 0 **不代表可用**：迁移 job 失败时依赖它的服务不会启动，
+#       compose 只在 stderr 提一句。start.sh 自己校验一次性 job 的退出码并打日志。
+#     · 就绪必须轮询探针（/readyz 含数据库检查），不能固定 sleep。
+#     · 缺 .env 时 compose 只抛 `${VAR:?}` 断言；start.sh 一次性列全缺失变量。
+#     · restart 明确拒绝 --purge（重启不该丢数据），避免&quot;手滑重启&quot;变清库。
+#   → 期望：末行 &quot;启动完成。&quot;，退出码 0；任一环节失败退出码 1 并打印相关日志
+
+# 1) Go 全量门禁（容器内，MSYS_NO_PATHCONV=1 必需）
+MSYS_NO_PATHCONV=1 docker run --rm -v &quot;D:/Code/Ontology-Agent:/src&quot; \
+  -v odap-gocache:/go/pkg/mod -v odap-gobuild:/root/.cache/go-build -w &quot;/src&quot; \
+  -e GOPROXY=https://goproxy.cn,direct -e GOFLAGS=-mod=mod golang:1.23-bookworm \
+  sh -c &quot;gofmt -l internal cmd mockerp tools; go build ./... &amp;&amp; go vet ./... &amp;&amp; go test ./... &quot;
+
+# 2) 集成测试（真实 PostgreSQL，应用角色 RLS 生效）
+MSYS_NO_PATHCONV=1 docker run --rm --network odap-test-net \
+  -v &quot;D:/Code/Ontology-Agent:/src&quot; -v odap-gocache:/go/pkg/mod \
+  -v odap-gobuild:/root/.cache/go-build -w &quot;/src&quot; \
+  -e GOFLAGS=-mod=mod \
+  -e ODAP_DATABASE_URL=&quot;postgres://odap_app:apppw@odap-pg-test:5432/odap?sslmode=disable&quot; \
+  golang:1.23-bookworm sh -c &quot;go test -count=1 -tags integration ./internal/audit/... ./internal/execution/...&quot;
+
+# 3) 契约门禁
+docker run --rm -v &quot;D:/Code/Ontology-Agent:/src&quot; -w /src \
+  -e GOFLAGS=-mod=mod golang:1.23-bookworm sh -c &quot;go run ./tools/contract-lint -root .&quot;
+
+# 4) 前端构建
+cd web &amp;&amp; npm install &amp;&amp; npm run build     # 内含 tsc --noEmit
+
+# 5) Compose 校验
+docker compose --env-file .env.example config
+
+# 6) 启动本项目（第十六篇 §8.2 最小启动路径）
+cp .env.example .env      # 本机按需改端口：MOCKERP_DB_HOST_PORT=5443（若 5433 被占用）
+MSYS_NO_PATHCONV=1 docker compose --env-file .env up -d --build
+MSYS_NO_PATHCONV=1 docker compose --env-file .env ps -a          # 8 服务 Up/healthy，migrate 两 job Exited(0)
+
+# 7) 启动后端到端探针
+curl -s http://127.0.0.1:8080/healthz
+curl -s http://127.0.0.1:8080/readyz
+curl -s -H &quot;X-Odap-Dev-Tenant: 11111111-1111-1111-1111-111111111111&quot; \
+        -H &quot;X-Odap-Dev-Subject: 22222222-2222-2222-2222-222222222222&quot; \
+        http://127.0.0.1:8080/api/v1/runs                        # 200 {&quot;items&quot;:[],&quot;next_cursor&quot;:&quot;&quot;}
+curl -s -o /dev/null -w &quot;%{http_code}\n&quot; http://127.0.0.1:5173/  # 200（前端）
+
+# 8) 全新库上验证缺陷 #6 的两条密码设置路径（真实 scram 认证，绕开回环 trust）
+MSYS_NO_PATHCONV=1 docker cp migrations/platform/000017_set_app_role_password.sql odap-postgres-1:/tmp/000017.sql
+MSYS_NO_PATHCONV=1 docker exec -i odap-postgres-1 psql -U odap -d postgres -v ON_ERROR_STOP=1 \
+  -c &quot;SELECT set_config(&#x27;odap.app_password&#x27;,&#x27;&lt;pw&gt;&#x27;,false)&quot; -f /tmp/000017.sql
+
+# 9) 前端契约一致性（类型层）
+cd web &amp;&amp; npx tsc --noEmit            # 0 错误；契约字段漂移在编译期即暴露
+
+# 10) 产品级 UI 验收（真实浏览器 + 真实 compose 栈）
+#     前置：compose 栈已起，且 nginx 已注入开发演示身份（见 .env 的 ODAP_DEV_*）
+bash tools/ui-route-sweep.sh          # 19 条路由逐条体检：TITLE / ROOTLEN / ERRORS / NOTE
+bash tools/ui-verify.sh               # 10 页 × 7 项断言 + 字号读数 + 12 张截图
+                                      # 期望输出：通过 73 项，失败 0 项
+# 注：两个脚本均已 unset 代理并内置 wait_ready 轮询；截图落在 artifacts/shots/
+
+# 11) 演示数据注入（数据文件驱动；datasets/finance-demo/*.json 为唯一真源）
+bash tools/dev-run.sh go run ./cmd/migrate up            # 含 000018/000019
+bash tools/dev-run.sh go run ./cmd/api seed --dataset finance-demo --replace
+#   → seed complete … &quot;agents&quot;:1,&quot;tools&quot;:7,&quot;providers&quot;:2,&quot;ontologies&quot;:1,&quot;plans&quot;:1,&quot;runs&quot;:1
+bash tools/dev-run.sh go run ./cmd/api seed --dataset finance-demo   # 二次执行幂等通过（内容一致）
+
+# 12) 模型调用链端到端自检（含&quot;落账回查&quot;）
+bash tools/dev-run.sh go run ./cmd/api llm-check --tenant 11111111-1111-1111-1111-111111111111
+#   → 模型: mock-chat ｜ 内容: {&quot;decision&quot;:&quot;APPROVE&quot;} ｜ 账本: … tokens=1110 status=SETTLED
+#     可用端点: 2（被排除/提示 1 条）
+bash tools/dev-run.sh go run ./cmd/api llm-check \
+  --tenant 11111111-1111-1111-1111-111111111111 --model gpt-4o-mini
+#   → 期望失败：UNAVAILABLE … 已登记但当前不可用 …；拒绝回落到其他模型   （缺陷 #16 的负向门禁）
+
+# 13) 目录类页面渲染门禁（缺陷 #19/#21/#22/#24 的回归测试，**退出码即结论**）
+bash tools/ui-catalog-verify.sh
+#   覆盖 6 个&quot;有数据&quot;的页面：/admin/ontologies /agents /tools /identity /models /workflows
+#   → 断言：页面标题 / 无错误态 / **数据行数** / 未出现&quot;未知状态&quot; / 无误导性 404 文案 / 徽标数 &gt; 0
+#   → 期望：目录类页面渲染门禁：通过 36 项，失败 0 项
+#   ⚠️ 为什么 ui-route-sweep.sh 抓不到缺陷 #19/#21：#19 的形态是&quot;标题在、表格渲染时崩&quot;，
+#      #21 的形态是&quot;整页被错误边界替换&quot;——只断言&quot;标题是否存在&quot;的门禁对它们是**假阴性**。
+#      #24 是第三种形态：**标题在、空态标题也在、无任何报错，但一行数据都没有**。
+#   ⚠️ 为什么必须断言&quot;数据行数&quot;：#19 在**空数据集**下完全不可见（表格一行都不渲染，
+#      坏代码根本不执行）。空集下的渲染断言是假绿，必须有种子数据 + 行数断言。
+
+# 14) 空列表契约一致性（缺陷 #19 连带：items 必须是数组，不能是 null）
+for ep in policies audit-events approvals evaluations; do
+  curl -s --noproxy &#x27;*&#x27; \
+    -H &quot;X-Odap-Dev-Tenant: 11111111-1111-1111-1111-111111111111&quot; \
+    -H &quot;X-Odap-Dev-Subject: 22222222-2222-2222-2222-222222222222&quot; \
+    &quot;http://127.0.0.1:5173/api/v1/$ep?limit=2&quot;
+done
+#   → 期望：{&quot;items&quot;:[],&quot;next_cursor&quot;:&quot;&quot;}（修复前为 {&quot;items&quot;:null,&quot;next_cursor&quot;:&quot;&quot;}）
+
+# 15) 响应形状对照（缺陷 #22：聚合对象 ≠ 分页列表）
+curl -s --noproxy &#x27;*&#x27; \
+  -H &quot;X-Odap-Dev-Tenant: 11111111-1111-1111-1111-111111111111&quot; \
+  -H &quot;X-Odap-Dev-Subject: 22222222-2222-2222-2222-222222222222&quot; \
+  &quot;http://127.0.0.1:5173/api/v1/admin/model-providers&quot;
+#   → 期望：{&quot;providers&quot;:[…2 条…],&quot;endpoints&quot;:[…2 条…]}  ← 是聚合对象，不是 {items}
+#     前端若用 fetchList（解析 {items}）读它，会得到 items=undefined → 静默空态
+
+# 16) 工作流模板真实数据（缺陷 #24：端点曾恒返回 503 且断言&quot;无对应持久表&quot;）
+curl -s --noproxy &#x27;*&#x27; \
+  -H &quot;X-Odap-Dev-Tenant: 11111111-1111-1111-1111-111111111111&quot; \
+  -H &quot;X-Odap-Dev-Subject: 22222222-2222-2222-2222-222222222222&quot; \
+  &quot;http://127.0.0.1:5173/api/v1/plan-templates&quot;
+#   → 期望 HTTP 200：items[0] = { name:&quot;报销审核工作流（FINANCE）&quot;, state:&quot;VALIDATED&quot;,
+#     node_kinds:[READ_OBJECT,ONTOLOGY_VALIDATE,RULE_EVALUATE,APPROVAL,ERP_OPERATION,RECONCILE],
+#     ontology_ref:&quot;finance-core&quot;, version:1 }
+#   → POST 仍为 503（写入路径确未实现，保持 fail-closed，不返回伪成功）
+
+# 17) 入口缓存头门禁（缺陷 #23：入口 HTML 缺 Cache-Control → 用户被钉死在旧 bundle）
+bash tools/http-entry-cache-verify.sh
+#   → 期望：通过 8 项，失败 0 项
+#   → 断言：① / 与 /index.html 与深链路由的 Cache-Control 含 no-store；
+#           ② 带哈希资源的 Cache-Control **只有一条**且含 immutable，
+#              且 index.html 引用的哈希资源确实存在（防&quot;入口指向已删除的旧包&quot;）；
+#           ③ 服务端产物**内容摘要** == **web 镜像内**产物（防&quot;nginx 服务了旧文件&quot;）；
+#           ④ web 镜像不早于前端源码（防&quot;改了代码但没重建镜像&quot;）
+#   ⚠️ ③ 的判据是**镜像内**产物，不是本地 web/dist：Dockerfile.web 在镜像内构建，
+#      且 .dockerignore **排除 web/dist** —— 本地 dist 根本不是部署输入。
+#      用本地 dist 当判据（无论比文件名还是比内容）都会假失败。见 §5.8。
+#   ⚠️ ④ 为什么必须有：`docker compose up -d` **不会**重建镜像（实测 Created 不变），
+#      所以&quot;改前端 → 直接重启&quot;会得到旧界面——其它门禁都只断言&quot;页面渲染出来了&quot;，
+#      对这种情况全部是假阴性。修复动作： bash start.sh --build
+#   ⚠️ 这条门禁为什么必须独立存在：`docker compose up` 成功、`ui-route-sweep.sh` 19/19、
+#      `ui-catalog-verify.sh` 全绿，**对缺陷 #23 全部是假阴性**——它们每次都新起浏览器，
+#      从不复用用户的缓存；而真实用户用的正是同一个浏览器。**验证的&quot;新环境&quot;与用户的
+#      &quot;旧环境&quot;不同，是这类缺陷能长期存活的根本原因。**
+
+# 18) 模型供应商写入链（缺陷 #25–#27 的回归测试）
+# 18a) 单元门禁：provider_id 派生必须无损，显式 id 必须合规范形状
+bash tools/dev-run.sh go test ./internal/api/store/... -run &#x27;TestDeriveProviderID|TestValidateProviderID&#x27; -v
+#   → 期望 PASS（22 个表驱动用例）。关键负例：显示名 &quot;E2E 探针供应商&quot; 必须 **fail-closed**，
+#     而不是退回旧行为产生 &quot;e2e&quot;（中文语义丢失 + 与任何 &quot;E2E*&quot; 名撞主键）
+
+# 18b) API 四态（写入链在部署镜像上的真实行为）
+B=http://127.0.0.1:8080/api/v1; H=&#x27;-H X-Odap-Dev-Tenant:11111111-1111-1111-1111-111111111111 -H X-Odap-Dev-Subject:22222222-2222-2222-2222-222222222222 -H X-Odap-Dev-Scopes:admin:model:write&#x27;
+curl -s --noproxy &#x27;*&#x27; $H -H &#x27;Content-Type: application/json&#x27; -H &#x27;Idempotency-Key: k1&#x27; -X POST &quot;$B/admin/model-providers&quot; \
+  -d &#x27;{&quot;provider_id&quot;:&quot;e2e-verify&quot;,&quot;display_name&quot;:&quot;E2E 验证用供应商&quot;,&quot;provider_type&quot;:&quot;MOCK&quot;,&quot;endpoint&quot;:{&quot;endpoint_name&quot;:&quot;e2e-verify-ep&quot;,&quot;deployment_type&quot;:&quot;MOCK&quot;}}&#x27;
+#   → 期望 201 {&quot;provider_id&quot;:&quot;e2e-verify&quot;,&quot;endpoint_id&quot;:&quot;…&quot;}
+curl -s --noproxy &#x27;*&#x27; $H -H &#x27;Content-Type: application/json&#x27; -H &#x27;Idempotency-Key: k2&#x27; -X POST &quot;$B/admin/model-providers&quot; \
+  -d &#x27;{&quot;provider_id&quot;:&quot;e2e-verify&quot;,&quot;display_name&quot;:&quot;重复&quot;,&quot;provider_type&quot;:&quot;MOCK&quot;,&quot;endpoint&quot;:{&quot;endpoint_name&quot;:&quot;d&quot;,&quot;deployment_type&quot;:&quot;MOCK&quot;}}&#x27;
+#   → 期望 409 CONFLICT（provider_id 已存在）
+curl -s --noproxy &#x27;*&#x27; $H -H &#x27;Content-Type: application/json&#x27; -H &#x27;Idempotency-Key: k3&#x27; -X POST &quot;$B/admin/model-providers&quot; \
+  -d &#x27;{&quot;provider_id&quot;:&quot;x1&quot;,&quot;display_name&quot;:&quot;x&quot;,&quot;provider_type&quot;:&quot;OPENAI_COMPATIBLE&quot;,&quot;endpoint&quot;:{&quot;endpoint_name&quot;:&quot;e&quot;,&quot;deployment_type&quot;:&quot;HTTP&quot;,&quot;credential_ref&quot;:&quot;K&quot;}}&#x27;
+#   → 期望 400（HTTP 端点缺 base_url）
+curl -s --noproxy &#x27;*&#x27; -H &#x27;Content-Type: application/json&#x27; -X POST &quot;$B/admin/model-providers&quot; -d &#x27;{}&#x27;
+#   → 期望 401 UNAUTHENTICATED（未认证请求到不了 store）
+
+# 18c) 派生 fail-closed（缺陷 #26 的关键负例：修复前会静默产出 &quot;e2e&quot;）
+curl -s --noproxy &#x27;*&#x27; $H -H &#x27;Content-Type: application/json&#x27; -H &#x27;Idempotency-Key: k4&#x27; -X POST &quot;$B/admin/model-providers&quot; \
+  -d &#x27;{&quot;display_name&quot;:&quot;E2E 探针供应商&quot;,&quot;provider_type&quot;:&quot;MOCK&quot;,&quot;endpoint&quot;:{&quot;endpoint_name&quot;:&quot;e&quot;,&quot;deployment_type&quot;:&quot;MOCK&quot;}}&#x27;
+#   → 期望 400：display_name 含无法映射为 ASCII 标识的字符（如中文），无法隐式派生 provider_id；请显式提供 provider_id
+curl -s --noproxy &#x27;*&#x27; $H -H &#x27;Content-Type: application/json&#x27; -H &#x27;Idempotency-Key: k5&#x27; -X POST &quot;$B/admin/model-providers&quot; \
+  -d &#x27;{&quot;provider_id&quot;:&quot;a/b&quot;,&quot;display_name&quot;:&quot;x&quot;,&quot;provider_type&quot;:&quot;MOCK&quot;,&quot;endpoint&quot;:{&quot;endpoint_name&quot;:&quot;e&quot;,&quot;deployment_type&quot;:&quot;MOCK&quot;}}&#x27;
+#   → 期望 400（路径分隔符不得进入主键；它是 /model-providers/{id}/verify 的路径参数）
+
+# 18d) 装配诊断必须覆盖&quot;尚无模型版本的端点&quot;（缺陷 #27）
+bash tools/dev-run.sh go run ./cmd/api llm-check --tenant 11111111-1111-1111-1111-111111111111
+#   → 基线（干净库）期望：bindings=2，被排除/提示 1 条（openai-compat 端点 DISABLED）
+#   → 执行 18b 后再跑：被排除/提示 应**增加**，且新建端点逐个带原因出现：
+#       WARN 端点排除/提示 provider=&lt;新供应商&gt; … reason=该端点尚未登记任何模型版本（llm.model_revisions 无对应行），不参与路由
+#     修复前（INNER JOIN）这些端点 **一行都不产生** —— UI 说&quot;已创建&quot;，诊断只字不提
+#
+# 18e) 清理探针数据（保持演示库基态：mock-local / openai-compat）
+MSYS_NO_PATHCONV=1 docker compose exec -T postgres psql -U odap -d odap -c \
+  &quot;DELETE FROM llm.endpoints WHERE provider_id=&#x27;e2e-verify&#x27;; DELETE FROM llm.providers WHERE provider_id=&#x27;e2e-verify&#x27;;&quot;</code></pre>
+<hr/>
+<h2>8. 结论</h2>
+<ul>
+<li><strong>本波次范围内的设计要求已 100% 达成</strong>：M01–M04、M06–M11、M14、M16、M17 全部 ✅，且每个 ✅ 都有单测/集成测试/实测输出支撑。</li>
+<li><strong>24 处真实缺陷已发现并修复</strong>：7 处后端/数据面（#1 调度死锁、#2 分区缺失、#3 哈希链不可用、<strong>#6 应用角色密码缺失导致启动阻断</strong>、#4 RLS 缺失、#5 错误码漂移、#7 配置作用域），4 处前端契约一致性（#8 <code>WorkspaceSummary</code>、#9 <code>AdminOverview</code>、#10 <code>BusinessApp</code>、#11 <code>data-sources</code>，其中 <strong>#8/#9 直接导致 <code>/workspace</code> 与 <code>/admin</code> 白屏</strong>），7 处数据注入与模型调用链缺陷（#12 <code>plugin_versions</code> 守卫静默取消、#13 能力档案无处存放、#14 端点无地址、#15 账本恒空且失败被吞、#16 静默替换模型、#17 seed 静默保留旧内容、#18 Schema 关键字越界），4 处前端状态投影 / 端点缺口 / 静默假空（<strong>#19 状态映射直接索引 + 词表/字段/取值三方错位 → 本体/Agent/工具三页白屏</strong>、<strong>#20 详情端点契约缺失却被渲染成"资源不存在"</strong>、<strong>#21 身份页扁平结构 vs 对象结构 → 白屏</strong>、<strong>#22 聚合对象被当分页列表读 → 有 2 个供应商却显示"尚未配置"</strong>），2 处<strong>部署可送达性 / 端点落后于数据</strong>（<strong>#23 入口 HTML 缺 <code>Cache-Control</code> → 旧包被 immutable 钉死 7 天，修复到不了用户</strong>、<strong>#24 <code>plan-templates</code> 恒 503 且断言"无对应持久表"，而模板行一直在库里</strong>）。其中 <strong>#6 若不修复，设计书规定的"最小启动路径"根本无法拉起 api/worker</strong>；<strong>#23 若不修复，"修好了"与"用户看到修好了"之间会永远隔着一次硬刷新</strong>。</li>
+<li><strong>15 项门禁全绿</strong>：格式、编译、vet、单测、集成测试、迁移回放、契约门禁、前端构建（含 <code>tsc --noEmit</code>）、Compose 校验、<strong>真实启动</strong>、<strong>全路由渲染体检（19/19）</strong>、<strong>产品级 UI 断言（73 项通过 / 0 项失败）</strong>，以及 <strong>目录类页面渲染门禁（<code>tools/ui-catalog-verify.sh</code>，36 项通过 / 0 项失败，覆盖 6 个"有数据"的页面）</strong>、<strong>空列表契约一致性检查</strong>、<strong>入口缓存头门禁（<code>tools/http-entry-cache-verify.sh</code>，7 项通过 / 0 项失败）</strong>。</li>
+<li><strong>前端已达到产品级</strong>（对齐第十七篇 §3）：自研 <strong>73 个 SVG 图标</strong>替换全部 31 处裸 Unicode 字形；22/22 页面收敛为统一 <code>PageHeader</code>；36 个按钮补前置图标；品牌徽记 + <code>favicon.svg</code> + 主题色；字号实测正文 14px / 页面标题 28px / 指标数值 32px + 等宽数字；侧栏分组 + 图标 + 选中指示；状态一律"颜色 + 文字 + 图标"三重表达；暗色主题按 §3.4 留待后续。</li>
+<li><strong>本项目已实际启动并逐项实测通过</strong>：6 个常驻服务全部 Up（<code>postgres</code>/<code>mockerp-db</code> healthy），2 个迁移 job <code>Exited(0)</code>（17 个平台迁移 + 1 个 Mock ERP 迁移全部应用）；<code>/healthz</code>、<code>/readyz</code> 200；<code>/api/v1/runs</code> 无身份 401、带身份 200；<code>/api/v1/erp/capabilities</code> 200；<code>/api/v1/stream</code> 200（<code>text/event-stream</code>）；前端 <code>http://127.0.0.1:5173</code> 200 且 <code>/api</code> 反代可用；<strong>19 条前端路由在真实浏览器中逐条渲染正常、无白屏</strong>；容器网络内 mock-ERP <code>/mock/health</code> 200；跨租户读 0 行、跨租户写被 <code>WITH CHECK</code> 拒绝。</li>
+<li><strong>未达标项（全部可解释）</strong>：均源于设计书自身的 <code>[V1.5]</code> 范围标签或阶段硬前置（最主要是 P6 的仿真引擎与 P2 的存储选型 Spike 报告），而非实现遗漏。</li>
+<li><strong>新增治理资产</strong>：<code>tools/contract-lint</code> 把"契约漂移"从人工核对变为 CI 可阻断项；<code>tools/ui-route-sweep.sh</code> 与 <code>tools/ui-verify.sh</code> 把"界面是否达到产品级"从主观感受变为可复现断言；<code>tools/ui-catalog-verify.sh</code>（本波次新增）专门覆盖"标题在、表格崩"这一类<strong>逐路由体检抓不到</strong>的缺陷，并同时断言"未出现『未知状态』占位"与"无误导性 404 文案"。本波次进一步确立<strong>三条与"真能跑"直接相关的门禁</strong>：①"真实 <code>docker compose up</code>"——缺陷 #6 证明静态与单测门禁再全，也不等于真的能拉起服务；②"真实浏览器逐路由体检"——缺陷 #8/#9 证明后端门禁全绿，也不等于页面真的能打开；③"<strong>在非空数据集上</strong>逐页断言数据行与状态徽标"——缺陷 #19 证明前两条门禁在<strong>空数据集</strong>下会同时给出假绿（页面上一行都不渲染时，坏代码根本不会被执行）。</li>
+<li><strong>一处需要明确的设计-实现差异（非缺陷，但需治理）</strong>：<code>docs/contracts/01-全局状态注册表.md</code> 只收录 Run/Step/ToolCall/ERP 四个词表，<strong>未收录版本生命周期词表</strong>；而版本状态实际散落在三张表的 CHECK 约束里且<strong>互不一致</strong>（<code>ontology_versions</code> 独有 <code>VALID</code>/<code>REJECTED</code>，<code>plugin_versions</code> 用 <code>CREATED</code> 而非 <code>DRAFT</code>）。前端已按实现真源建立共享词表并覆盖全部取值，但<strong>词表本身应上收到 contracts/01 并统一三表枚举</strong>——这是后续词表治理项，已列入诚实清单。</li>
+</ul>
+</div></body>
+</html>

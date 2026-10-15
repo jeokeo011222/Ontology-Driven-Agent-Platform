@@ -1,0 +1,111 @@
+{
+  "name": "finance-demo",
+  "version": "0.1.0",
+  "description": "财务报销垂直切片演示数据集（第十六篇 §14.1「一套 Finance Ontology 与报销演示数据」）。身份 ID 必须与 .env 的 ODAP_DEV_* 一致，否则注入的数据在开发身份下不可见。",
+  "tenant": {
+    "id": "11111111-1111-1111-1111-111111111111",
+    "key": "finance-demo",
+    "name": "Finance Demo Tenant",
+    "users": [
+      {
+        "id": "22222222-2222-2222-2222-222222222222",
+        "login_name": "demo.admin",
+        "display_name": "演示管理员",
+        "email": "demo.admin@example.com"
+      }
+    ],
+    "orgs": [
+      {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "org_code": "FIN",
+        "name": "财务部",
+        "org_type": "DEPARTMENT"
+      }
+    ],
+    "roles": [
+      {
+        "id": "44444444-4444-4444-8444-444444444444",
+        "role_key": "finance-operator",
+        "name": "财务操作员",
+        "description": "演示角色（人工重建，非内置）：可创建/取消运行、审批、发布本体、查审计",
+        "system_role": false,
+        "permissions": [
+          "run.create",
+          "run.read",
+          "run.cancel",
+          "approval.decide",
+          "ontology.publish",
+          "audit.read"
+        ]
+      },
+      {
+        "id": "77777777-7777-4777-8777-777777777777",
+        "role_key": "platform-admin",
+        "name": "系统管理员",
+        "description": "唯一内置角色：全平台管理员——业务工作台 + 平台管理控制台全量读写（第二篇 §11.2「最小化的系统管理员角色」）",
+        "system_role": true,
+        "permissions": [
+          "workspace.view",
+          "app.read",
+          "run.create",
+          "run.read",
+          "run.cancel",
+          "run.reconcile",
+          "approval.read",
+          "approval.decide",
+          "ontology.publish",
+          "audit.read",
+          "admin.console",
+          "admin.identity.read",
+          "admin.identity.write",
+          "admin.ontology.read",
+          "admin.ontology.write",
+          "admin.ontology.validate",
+          "admin.ontology.publish",
+          "admin.data-source.read",
+          "admin.agent.read",
+          "admin.agent.write",
+          "admin.agent.publish",
+          "admin.tool.read",
+          "admin.tool.write",
+          "admin.workflow.read",
+          "admin.workflow.write",
+          "admin.model.read",
+          "admin.model.write",
+          "admin.connector.read",
+          "admin.connector.write",
+          "admin.policy.read",
+          "admin.policy.write",
+          "admin.monitoring.read",
+          "admin.audit.read",
+          "admin.evaluation.read",
+          "admin.release.read",
+          "admin.release.promote"
+        ]
+      }
+    ],
+    "memberships": [
+      {
+        "id": "55555555-5555-4555-8555-555555555555",
+        "user_id": "22222222-2222-2222-2222-222222222222",
+        "org_id": "33333333-3333-4333-8333-333333333333"
+      }
+    ],
+    "bindings": [
+      {
+        "id": "66666666-6666-4666-8666-666666666666",
+        "membership_id": "55555555-5555-4555-8555-555555555555",
+        "role_id": "44444444-4444-4444-8444-444444444444",
+        "scope_type": "TENANT",
+        "granted_by": "22222222-2222-2222-2222-222222222222"
+      },
+      {
+        "id": "88888888-8888-4888-8888-888888888888",
+        "membership_id": "55555555-5555-4555-8555-555555555555",
+        "role_id": "77777777-7777-4777-8777-777777777777",
+        "scope_type": "TENANT",
+        "granted_by": "22222222-2222-2222-2222-222222222222"
+      }
+    ]
+  }
+}

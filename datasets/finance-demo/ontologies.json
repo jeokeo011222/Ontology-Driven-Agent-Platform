@@ -1,0 +1,179 @@
+[
+  {
+    "id": "f0000000-0000-4000-8000-000000000001",
+    "ontology_key": "finance-core",
+    "name": "财务核心本体",
+    "domain": "FINANCE",
+    "granularity": "DOMAIN",
+    "description": "报销垂直切片的核心本体：报销单、员工、预算、部门及其关系（第五篇 §4）",
+    "owner_org_id": "33333333-3333-4333-8333-333333333333",
+    "versions": [
+      {
+        "id": "f0000000-0000-4000-8000-000000000002",
+        "version": "0.1.0",
+        "status": "PUBLISHED",
+        "manifest": {
+          "summary": "报销垂直切片本体：报销单、员工、预算、部门及其关系（第五篇 §4）",
+          "classes": [
+            {
+              "name": "ExpenseClaim",
+              "label": "报销单",
+              "description": "一次费用报销申请",
+              "attributes": [
+                {
+                  "name": "amount",
+                  "type": "number",
+                  "description": "报销金额",
+                  "required": true
+                },
+                {
+                  "name": "claimDate",
+                  "type": "date",
+                  "description": "报销日期",
+                  "required": true
+                }
+              ]
+            },
+            {
+              "name": "Employee",
+              "label": "员工",
+              "description": "提交或审批报销单的自然人",
+              "attributes": []
+            },
+            {
+              "name": "Budget",
+              "label": "预算",
+              "description": "承担报销金额的预算科目",
+              "attributes": []
+            },
+            {
+              "name": "Department",
+              "label": "部门",
+              "description": "员工所属的组织单元",
+              "attributes": []
+            }
+          ],
+          "relations": [
+            {
+              "name": "submittedBy",
+              "from_class": "ExpenseClaim",
+              "to_class": "Employee",
+              "cardinality": "many-to-one",
+              "description": "报销单由某员工提交"
+            },
+            {
+              "name": "chargedTo",
+              "from_class": "ExpenseClaim",
+              "to_class": "Budget",
+              "cardinality": "many-to-one",
+              "description": "报销单计入某预算科目"
+            },
+            {
+              "name": "approvedBy",
+              "from_class": "ExpenseClaim",
+              "to_class": "Employee",
+              "cardinality": "many-to-one",
+              "description": "报销单经某员工审批"
+            },
+            {
+              "name": "belongsTo",
+              "from_class": "Employee",
+              "to_class": "Department",
+              "cardinality": "many-to-one",
+              "description": "员工隶属于某部门"
+            }
+          ],
+          "enumerations": [],
+          "shapes": [
+            {
+              "id": "ExpenseClaimShape",
+              "target_class": "ExpenseClaim",
+              "severity": "Violation",
+              "properties": [
+                {
+                  "path": "amount",
+                  "min_count": 1,
+                  "max_count": 1,
+                  "datatype": "decimal",
+                  "min_inclusive": 0.01
+                },
+                {
+                  "path": "submittedBy",
+                  "min_count": 1,
+                  "max_count": 1,
+                  "class": "Employee",
+                  "node_kind": "IRI"
+                },
+                {
+                  "path": "chargedTo",
+                  "min_count": 1,
+                  "class": "Budget",
+                  "node_kind": "IRI"
+                }
+              ]
+            }
+          ],
+          "instances": [
+            {
+              "class": "Department",
+              "id": "D-001",
+              "properties": {}
+            },
+            {
+              "class": "Employee",
+              "id": "E-001",
+              "properties": {
+                "belongsTo": "D-001"
+              }
+            },
+            {
+              "class": "Budget",
+              "id": "B-001",
+              "properties": {}
+            },
+            {
+              "class": "ExpenseClaim",
+              "id": "EC-0001",
+              "properties": {
+                "amount": 1200.5,
+                "claimDate": "2026-01-15",
+                "submittedBy": "E-001",
+                "chargedTo": "B-001"
+              }
+            }
+          ]
+        },
+        "artifacts": [
+          {
+            "id": "f0000000-0000-4000-8000-000000000011",
+            "artifact_type": "OWL",
+            "logical_path": "ontology/finance-core.ttl",
+            "media_type": "text/turtle",
+            "storage_uri": "seed://finance-demo/ontology/finance-core.ttl",
+            "content": "@prefix ex: <https://odap.example/finance#> .\n@prefix owl: <http://www.w3.org/2002/07/owl#> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n\nex:ExpenseClaim a owl:Class ; rdfs:label \"报销单\" .\nex:Employee a owl:Class ; rdfs:label \"员工\" .\nex:Budget a owl:Class ; rdfs:label \"预算\" .\nex:Department a owl:Class ; rdfs:label \"部门\" .\n\nex:submittedBy a owl:ObjectProperty ; rdfs:domain ex:ExpenseClaim ; rdfs:range ex:Employee .\nex:chargedTo a owl:ObjectProperty ; rdfs:domain ex:ExpenseClaim ; rdfs:range ex:Budget .\nex:approvedBy a owl:ObjectProperty ; rdfs:domain ex:ExpenseClaim ; rdfs:range ex:Employee .\nex:belongsTo a owl:ObjectProperty ; rdfs:domain ex:Employee ; rdfs:range ex:Department .\n\nex:amount a owl:DatatypeProperty ; rdfs:domain ex:ExpenseClaim ; rdfs:range xsd:decimal .\nex:claimDate a owl:DatatypeProperty ; rdfs:domain ex:ExpenseClaim ; rdfs:range xsd:date .\n"
+          },
+          {
+            "id": "f0000000-0000-4000-8000-000000000012",
+            "artifact_type": "SHACL",
+            "logical_path": "ontology/finance-core.shacl.ttl",
+            "media_type": "text/turtle",
+            "storage_uri": "seed://finance-demo/ontology/finance-core.shacl.ttl",
+            "content": "@prefix sh: <http://www.w3.org/ns/shacl#> .\n@prefix ex: <https://odap.example/finance#> .\n\nex:ExpenseClaimShape a sh:NodeShape ;\n  sh:targetClass ex:ExpenseClaim ;\n  sh:property [ sh:path ex:amount ; sh:minInclusive 0.01 ; sh:maxCount 1 ; sh:message \"报销金额必须大于 0\" ] ;\n  sh:property [ sh:path ex:submittedBy ; sh:minCount 1 ; sh:maxCount 1 ; sh:message \"报销单必须有唯一提交人\" ] ;\n  sh:property [ sh:path ex:chargedTo ; sh:minCount 1 ; sh:message \"报销单必须归属预算\" ] .\n"
+          },
+          {
+            "id": "f0000000-0000-4000-8000-000000000013",
+            "artifact_type": "DOCUMENT",
+            "logical_path": "ontology/README.md",
+            "media_type": "text/markdown",
+            "storage_uri": "seed://finance-demo/ontology/README.md",
+            "content": "# Finance Core Ontology 0.1.0\n\n报销垂直切片本体，含 4 个类、4 个对象属性、2 个数据属性与 1 个 SHACL 形状。\n\n用于演示：受控语义查询、SHACL 校验与制度合规判定。\n"
+          }
+        ],
+        "publication": {
+          "id": "f0000000-0000-4000-8000-000000000007",
+          "environment": "DEVELOPMENT"
+        }
+      }
+    ]
+  }
+]

@@ -1,0 +1,777 @@
+[
+  {
+    "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    "tool_key": "erp.expense.query",
+    "description": "查询 ERP 费用单据（只读）",
+    "plugin": {
+      "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "plugin_key": "tool:erp.expense.query",
+      "plugin_kind": "TOOL",
+      "name": "ERP 费用查询",
+      "description": "演示工具插件",
+      "version_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "TOOL",
+        "tool_key": "erp.expense.query"
+      }
+    },
+    "version": {
+      "id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "expense_id": { "type": "string" }
+        },
+        "required": ["expense_id"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "expense_id": { "type": "string" },
+          "amount": { "type": "number" },
+          "status": { "type": "string" }
+        }
+      },
+      "capabilities": ["erp:read"],
+      "effect_class": "READ",
+      "execution_config": {
+        "adapter": "mock-erp",
+        "object_type": "ExpenseClaim",
+        "operation": "get"
+      }
+    }
+  },
+  {
+    "id": "d0000002-0000-4000-8000-000000000002",
+    "tool_key": "erp.vendor.lookup",
+    "description": "按纳税人识别号查询供应商主数据，用于核验发票抬头真伪",
+    "plugin": {
+      "id": "b0000002-0000-4000-8000-000000000002",
+      "plugin_key": "tool:erp.vendor.lookup",
+      "plugin_kind": "TOOL",
+      "name": "供应商主数据查询",
+      "description": "演示工具插件：只读读取供应商档案",
+      "version_id": "c0000002-0000-4000-8000-000000000002",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "TOOL",
+        "tool_key": "erp.vendor.lookup"
+      }
+    },
+    "version": {
+      "id": "e0000002-0000-4000-8000-000000000002",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "tax_id": { "type": "string", "description": "纳税人识别号（统一社会信用代码）" },
+          "vendor_name": { "type": "string", "description": "供应商名称" }
+        },
+        "description": "tax_id 与 vendor_name 至少提供一个；平台 Schema 子集不支持 anyOf，故该约束由工具实现侧校验"
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "vendor_id": { "type": "string" },
+          "vendor_name": { "type": "string" },
+          "tax_id": { "type": "string" },
+          "risk_level": { "type": "string", "enum": ["LOW", "MEDIUM", "HIGH"] },
+          "blacklisted": { "type": "boolean" }
+        }
+      },
+      "capabilities": ["erp:read", "vendor:read"],
+      "effect_class": "READ",
+      "execution_config": {
+        "adapter": "mock-erp",
+        "object_type": "Vendor",
+        "operation": "query"
+      }
+    }
+  },
+  {
+    "id": "d0000003-0000-4000-8000-000000000003",
+    "tool_key": "kb.policy.search",
+    "description": "在企业制度知识库中检索条款原文，为审批结论提供可引用依据",
+    "plugin": {
+      "id": "b0000003-0000-4000-8000-000000000003",
+      "plugin_key": "tool:kb.policy.search",
+      "plugin_kind": "TOOL",
+      "name": "制度条款检索",
+      "description": "演示工具插件：RAG 检索制度知识库",
+      "version_id": "c0000003-0000-4000-8000-000000000003",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "TOOL",
+        "tool_key": "kb.policy.search"
+      }
+    },
+    "version": {
+      "id": "e0000003-0000-4000-8000-000000000003",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" },
+          "top_k": { "type": "integer", "minimum": 1, "maximum": 20, "default": 5 }
+        },
+        "required": ["query"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "hits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "clause_id": { "type": "string" },
+                "text": { "type": "string" },
+                "score": { "type": "number" }
+              }
+            }
+          }
+        }
+      },
+      "capabilities": ["kb:read"],
+      "effect_class": "READ",
+      "execution_config": {
+        "adapter": "mock-retriever",
+        "index": "policy-kb",
+        "operation": "search"
+      }
+    }
+  },
+  {
+    "id": "d0000004-0000-4000-8000-000000000004",
+    "tool_key": "doc.receipt.extract",
+    "description": "从票据影像中抽取结构化字段（发票号、金额、开票日期、销方）",
+    "plugin": {
+      "id": "b0000004-0000-4000-8000-000000000004",
+      "plugin_key": "tool:doc.receipt.extract",
+      "plugin_kind": "TOOL",
+      "name": "票据字段抽取",
+      "description": "演示工具插件：文档结构化抽取",
+      "version_id": "c0000004-0000-4000-8000-000000000004",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "TOOL",
+        "tool_key": "doc.receipt.extract"
+      }
+    },
+    "version": {
+      "id": "e0000004-0000-4000-8000-000000000004",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "artifact_uri": { "type": "string", "description": "票据影像的存储 URI" },
+          "media_type": { "type": "string", "default": "image/jpeg" }
+        },
+        "required": ["artifact_uri"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "invoice_no": { "type": "string" },
+          "amount": { "type": "number" },
+          "issued_on": { "type": "string", "format": "date" },
+          "seller_name": { "type": "string" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      },
+      "capabilities": ["doc:read", "ocr:extract"],
+      "effect_class": "READ",
+      "execution_config": {
+        "adapter": "mock-ocr",
+        "model": "receipt-extractor-v1",
+        "operation": "extract"
+      }
+    }
+  },
+  {
+    "id": "d0000005-0000-4000-8000-000000000005",
+    "tool_key": "budget.check",
+    "description": "查询成本中心预算余额与占用情况，判断本次报销是否超额",
+    "plugin": {
+      "id": "b0000005-0000-4000-8000-000000000005",
+      "plugin_key": "tool:budget.check",
+      "plugin_kind": "TOOL",
+      "name": "预算余额查询",
+      "description": "演示工具插件：预算占用校验",
+      "version_id": "c0000005-0000-4000-8000-000000000005",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "TOOL",
+        "tool_key": "budget.check"
+      }
+    },
+    "version": {
+      "id": "e0000005-0000-4000-8000-000000000005",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "cost_center": { "type": "string" },
+          "amount": { "type": "number", "minimum": 0.01 },
+          "fiscal_period": { "type": "string", "description": "例如 2026-Q1" }
+        },
+        "required": ["cost_center", "amount"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "cost_center": { "type": "string" },
+          "budget_total": { "type": "number" },
+          "budget_used": { "type": "number" },
+          "budget_remaining": { "type": "number" },
+          "sufficient": { "type": "boolean" }
+        }
+      },
+      "capabilities": ["budget:read"],
+      "effect_class": "READ",
+      "execution_config": {
+        "adapter": "mock-budget",
+        "object_type": "BudgetAccount",
+        "operation": "check"
+      }
+    }
+  },
+  {
+    "id": "d0000006-0000-4000-8000-000000000006",
+    "tool_key": "erp.expense.decide",
+    "description": "将审批结论回写 ERP（外部写入：需人工复核门禁后才可执行）",
+    "plugin": {
+      "id": "b0000006-0000-4000-8000-000000000006",
+      "plugin_key": "tool:erp.expense.decide",
+      "plugin_kind": "TOOL",
+      "name": "报销审批回写",
+      "description": "演示工具插件：外部写入，受高风险门禁约束",
+      "version_id": "c0000006-0000-4000-8000-000000000006",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "TOOL",
+        "tool_key": "erp.expense.decide"
+      }
+    },
+    "version": {
+      "id": "e0000006-0000-4000-8000-000000000006",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "expense_id": { "type": "string" },
+          "decision": { "type": "string", "enum": ["APPROVE", "REJECT", "NEED_INFO"] },
+          "comment": { "type": "string" }
+        },
+        "required": ["expense_id", "decision"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "expense_id": { "type": "string" },
+          "applied": { "type": "boolean" },
+          "erp_reference": { "type": "string" }
+        }
+      },
+      "capabilities": ["erp:write"],
+      "effect_class": "EXTERNAL_WRITE",
+      "execution_config": {
+        "adapter": "mock-erp",
+        "object_type": "ExpenseClaim",
+        "operation": "update",
+        "requires_approval": true,
+        "idempotency_key_field": "expense_id"
+      }
+    }
+  },
+  {
+    "id": "d0000007-0000-4000-8000-000000000007",
+    "tool_key": "audit.ledger.append",
+    "description": "向内部审计台账追加一条审核留痕（内部写入，不触达外部系统）",
+    "plugin": {
+      "id": "b0000007-0000-4000-8000-000000000007",
+      "plugin_key": "tool:audit.ledger.append",
+      "plugin_kind": "TOOL",
+      "name": "审计留痕写入",
+      "description": "演示工具插件：平台内部写入",
+      "version_id": "c0000007-0000-4000-8000-000000000007",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "TOOL",
+        "tool_key": "audit.ledger.append"
+      }
+    },
+    "version": {
+      "id": "e0000007-0000-4000-8000-000000000007",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "run_id": { "type": "string" },
+          "action": { "type": "string" },
+          "detail": { "type": "object" }
+        },
+        "required": ["run_id", "action"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "entry_id": { "type": "string" },
+          "recorded_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "capabilities": ["audit:write"],
+      "effect_class": "INTERNAL_WRITE",
+      "execution_config": {
+        "adapter": "ledger",
+        "table": "audit.entries",
+        "operation": "append"
+      }
+    }
+  },
+  {
+    "id": "d0000010-0000-4000-8000-000000000010",
+    "tool_key": "doc.word.read",
+    "description": "读取 Word 文档（.docx / .doc）并抽取为纯文本 —— 平台内置：与 AI 自动生成功能读取制度文档使用同一条链路",
+    "is_builtin": true,
+    "plugin": {
+      "id": "b0000010-0000-4000-8000-000000000010",
+      "plugin_key": "tool:doc.word.read",
+      "plugin_kind": "TOOL",
+      "name": "Word 文档读取",
+      "description": "平台内置工具插件：Word 文档文本抽取",
+      "version_id": "c0000010-0000-4000-8000-000000000010",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "TOOL",
+        "tool_key": "doc.word.read"
+      }
+    },
+    "version": {
+      "id": "e0000010-0000-4000-8000-000000000010",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_path": { "type": "string", "description": "文档路径（.docx 或 .doc）" }
+        },
+        "required": ["source_path"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string" },
+          "format": { "type": "string" },
+          "char_count": { "type": "integer" }
+        }
+      },
+      "capabilities": ["doc:read"],
+      "effect_class": "READ",
+      "execution_config": {
+        "adapter": "docingest",
+        "formats": ["docx", "doc"],
+        "operation": "extract"
+      }
+    }
+  },
+  {
+    "id": "d0000011-0000-4000-8000-000000000011",
+    "tool_key": "doc.excel.read",
+    "description": "读取 Excel 工作簿（.xlsx）并抽取为纯文本表格（按工作表逐行展开）",
+    "is_builtin": true,
+    "plugin": {
+      "id": "b0000011-0000-4000-8000-000000000011",
+      "plugin_key": "tool:doc.excel.read",
+      "plugin_kind": "TOOL",
+      "name": "Excel 工作簿读取",
+      "description": "平台内置工具插件：Excel 表格文本抽取",
+      "version_id": "c0000011-0000-4000-8000-000000000011",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "TOOL",
+        "tool_key": "doc.excel.read"
+      }
+    },
+    "version": {
+      "id": "e0000011-0000-4000-8000-000000000011",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_path": { "type": "string", "description": "工作簿路径（.xlsx）" }
+        },
+        "required": ["source_path"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string" },
+          "format": { "type": "string" },
+          "sheet_count": { "type": "integer" }
+        }
+      },
+      "capabilities": ["doc:read", "sheet:read"],
+      "effect_class": "READ",
+      "execution_config": {
+        "adapter": "docingest",
+        "formats": ["xlsx"],
+        "operation": "extract"
+      }
+    }
+  },
+  {
+    "id": "d0000012-0000-4000-8000-000000000012",
+    "tool_key": "doc.text.read",
+    "description": "读取纯文本 / Markdown / CSV / JSON 文档并抽取为纯文本 —— 平台内置的通用文本读取入口",
+    "is_builtin": true,
+    "plugin": {
+      "id": "b0000012-0000-4000-8000-000000000012",
+      "plugin_key": "tool:doc.text.read",
+      "plugin_kind": "TOOL",
+      "name": "文本 / Markdown / CSV / JSON 读取",
+      "description": "平台内置工具插件：通用纯文本抽取",
+      "version_id": "c0000012-0000-4000-8000-000000000012",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "TOOL",
+        "tool_key": "doc.text.read"
+      }
+    },
+    "version": {
+      "id": "e0000012-0000-4000-8000-000000000012",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_path": { "type": "string", "description": "文本类文档路径（.txt / .md / .csv / .json）" }
+        },
+        "required": ["source_path"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string" },
+          "format": { "type": "string" },
+          "char_count": { "type": "integer" }
+        }
+      },
+      "capabilities": ["doc:read", "text:read"],
+      "effect_class": "READ",
+      "execution_config": {
+        "adapter": "docingest",
+        "formats": ["txt", "md", "csv", "json"],
+        "operation": "extract"
+      }
+    }
+  },
+  {
+    "id": "d0000013-0000-4000-8000-000000000013",
+    "tool_key": "ontology.shacl.validate",
+    "description": "对本体形状约束（SHACL）执行确定性校验，产出可跨轮次复现、可去重的 finding 摘要",
+    "is_builtin": true,
+    "plugin": {
+      "id": "b0000013-0000-4000-8000-000000000013",
+      "plugin_key": "tool:ontology.shacl.validate",
+      "plugin_kind": "TOOL",
+      "name": "本体 SHACL 校验",
+      "description": "平台内置工具插件：SHACL 形状约束校验器",
+      "version_id": "c0000013-0000-4000-8000-000000000013",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "TOOL",
+        "tool_key": "ontology.shacl.validate"
+      }
+    },
+    "version": {
+      "id": "e0000013-0000-4000-8000-000000000013",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "ontology_version_id": { "type": "string" },
+          "focus_node": { "type": "string", "description": "可选：只校验指定焦点节点" }
+        },
+        "required": ["ontology_version_id"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "conforms": { "type": "boolean" },
+          "finding_digest": { "type": "string" },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "shape_id": { "type": "string" },
+                "path": { "type": "string" },
+                "component": { "type": "string" },
+                "severity": { "type": "string" },
+                "message": { "type": "string" }
+              }
+            }
+          }
+        }
+      },
+      "capabilities": ["ontology:validate"],
+      "effect_class": "READ",
+      "execution_config": {
+        "adapter": "shacl",
+        "engine": "internal/ontology/shacl",
+        "operation": "validate"
+      }
+    }
+  },
+  {
+    "id": "d0000014-0000-4000-8000-000000000014",
+    "tool_key": "ontology.graph.load",
+    "description": "装载本体清单（classes / relations / shapes）并执行闭包校验：关系必须指向真实存在的实例",
+    "is_builtin": true,
+    "plugin": {
+      "id": "b0000014-0000-4000-8000-000000000014",
+      "plugin_key": "tool:ontology.graph.load",
+      "plugin_kind": "TOOL",
+      "name": "本体清单装载",
+      "description": "平台内置工具插件：本体清单解析与闭包校验",
+      "version_id": "c0000014-0000-4000-8000-000000000014",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "TOOL",
+        "tool_key": "ontology.graph.load"
+      }
+    },
+    "version": {
+      "id": "e0000014-0000-4000-8000-000000000014",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "manifest": { "type": "object", "description": "本体清单（classes / relations / shapes）" }
+        },
+        "required": ["manifest"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "valid": { "type": "boolean" },
+          "class_count": { "type": "integer" },
+          "relation_count": { "type": "integer" },
+          "shape_count": { "type": "integer" }
+        }
+      },
+      "capabilities": ["ontology:read", "graph:load"],
+      "effect_class": "READ",
+      "execution_config": {
+        "adapter": "graphload",
+        "validator": "internal/ontology/graphload",
+        "operation": "load"
+      }
+    }
+  },
+  {
+    "id": "d0000015-0000-4000-8000-000000000015",
+    "tool_key": "llm.chat.complete",
+    "description": "经模型调用治理链（限流 / 预算 / 缓存 / 路由 / 结构化输出）调用大模型补全，结果写入用量账本",
+    "is_builtin": true,
+    "plugin": {
+      "id": "b0000015-0000-4000-8000-000000000015",
+      "plugin_key": "tool:llm.chat.complete",
+      "plugin_kind": "TOOL",
+      "name": "模型调用治理网关",
+      "description": "平台内置工具插件：受治理的大模型调用",
+      "version_id": "c0000015-0000-4000-8000-000000000015",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "TOOL",
+        "tool_key": "llm.chat.complete"
+      }
+    },
+    "version": {
+      "id": "e0000015-0000-4000-8000-000000000015",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "model_id": { "type": "string", "description": "已登记且参与路由的模型名" },
+          "prompt": { "type": "string" },
+          "json_schema": { "type": "object", "description": "可选：结构化输出约束" }
+        },
+        "required": ["model_id", "prompt"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "content": { "type": "string" },
+          "provider_id": { "type": "string" },
+          "usage": { "type": "object" }
+        }
+      },
+      "capabilities": ["llm:invoke"],
+      "effect_class": "EXTERNAL_WRITE",
+      "execution_config": {
+        "adapter": "llm-gateway",
+        "governance": ["rate_limit", "budget", "cache", "route", "structured_output"],
+        "operation": "chat"
+      }
+    }
+  },
+  {
+    "id": "d0000016-0000-4000-8000-000000000016",
+    "tool_key": "erp.nc65.operation",
+    "description": "通过用友 NC65 适配器执行 ERP 对象操作；未配置映射的对象或命令一律 fail-closed 返回 UNAVAILABLE",
+    "is_builtin": true,
+    "plugin": {
+      "id": "b0000016-0000-4000-8000-000000000016",
+      "plugin_key": "tool:erp.nc65.operation",
+      "plugin_kind": "TOOL",
+      "name": "用友 NC65 ERP 适配",
+      "description": "平台内置工具插件：外部系统集成适配器",
+      "version_id": "c0000016-0000-4000-8000-000000000016",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "TOOL",
+        "tool_key": "erp.nc65.operation"
+      }
+    },
+    "version": {
+      "id": "e0000016-0000-4000-8000-000000000016",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "object_type": { "type": "string" },
+          "operation": { "type": "string", "enum": ["get", "query", "update"] },
+          "payload": { "type": "object" }
+        },
+        "required": ["object_type", "operation"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "applied": { "type": "boolean" },
+          "erp_reference": { "type": "string" },
+          "outcome": { "type": "string", "enum": ["SUCCESS", "UNAVAILABLE", "UNKNOWN"] }
+        }
+      },
+      "capabilities": ["erp:read", "erp:write"],
+      "effect_class": "EXTERNAL_WRITE",
+      "execution_config": {
+        "adapter": "nc65",
+        "fail_closed": true,
+        "operation": "invoke"
+      }
+    }
+  },
+  {
+    "id": "d0000017-0000-4000-8000-000000000017",
+    "tool_key": "audit.chain.append",
+    "description": "向平台审计哈希链追加一条留痕（前序摘要入链），链式结构使篡改可被检测",
+    "is_builtin": true,
+    "plugin": {
+      "id": "b0000017-0000-4000-8000-000000000017",
+      "plugin_key": "tool:audit.chain.append",
+      "plugin_kind": "TOOL",
+      "name": "审计哈希链写入",
+      "description": "平台内置工具插件：审计链式留痕",
+      "version_id": "c0000017-0000-4000-8000-000000000017",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "TOOL",
+        "tool_key": "audit.chain.append"
+      }
+    },
+    "version": {
+      "id": "e0000017-0000-4000-8000-000000000017",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "actor_id": { "type": "string" },
+          "action": { "type": "string" },
+          "resource": { "type": "string" },
+          "detail": { "type": "object" }
+        },
+        "required": ["actor_id", "action", "resource"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "entry_digest": { "type": "string" },
+          "prev_digest": { "type": "string" },
+          "recorded_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "capabilities": ["audit:write", "audit:chain"],
+      "effect_class": "INTERNAL_WRITE",
+      "execution_config": {
+        "adapter": "audit-chain",
+        "package": "internal/audit",
+        "operation": "append"
+      }
+    }
+  },
+  {
+    "id": "d0000018-0000-4000-8000-000000000018",
+    "tool_key": "evidence.hash.anchor",
+    "description": "为运行证据包计算内容摘要并锚定，支持逐条校验与篡改检测",
+    "is_builtin": true,
+    "plugin": {
+      "id": "b0000018-0000-4000-8000-000000000018",
+      "plugin_key": "tool:evidence.hash.anchor",
+      "plugin_kind": "TOOL",
+      "name": "证据哈希链锚定",
+      "description": "平台内置工具插件：证据包摘要锚定",
+      "version_id": "c0000018-0000-4000-8000-000000000018",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "TOOL",
+        "tool_key": "evidence.hash.anchor"
+      }
+    },
+    "version": {
+      "id": "e0000018-0000-4000-8000-000000000018",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "run_id": { "type": "string" },
+          "bundle": { "type": "object", "description": "证据包内容" }
+        },
+        "required": ["run_id", "bundle"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "bundle_digest": { "type": "string" },
+          "anchors": { "type": "integer" },
+          "verified": { "type": "boolean" }
+        }
+      },
+      "capabilities": ["evidence:write", "evidence:anchor"],
+      "effect_class": "INTERNAL_WRITE",
+      "execution_config": {
+        "adapter": "evidence",
+        "package": "internal/evidence",
+        "operation": "anchor"
+      }
+    }
+  }
+]

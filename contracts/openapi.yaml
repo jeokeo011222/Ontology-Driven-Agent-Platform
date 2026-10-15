@@ -1,0 +1,4331 @@
+openapi: 3.1.0
+info:
+  title: ODAP Platform API
+  version: 1.0.0
+  description: |
+    ODAP 企业本体驱动智能体平台对外 HTTP 契约（唯一机器可读真源）。
+
+    权威来源：
+    - docs/contracts/01-全局状态注册表.md（Run 17 状态）
+    - docs/contracts/02-统一错误码注册表.md（12 基础码 + 域码 + 错误响应结构 §4）
+    - docs/contracts/03-API命名与契约规范.md（端点总表 §2、cursor 分页 §1.4、
+      Idempotency-Key §1.6、异步任务 §1.8、SSE §1.9）
+    - docs/第十七篇 §11.1（BFF 聚合端点）
+
+    本文件与 contracts/03 冲突时以本文件为准，并回修 contracts/03（契约规范 §1.10）。
+  license:
+    name: Proprietary
+servers:
+  - url: /
+    description: 当前部署（路径已含 /api/v1 前缀）
+
+tags:
+  - name: Runs
+    description: 执行资源（唯一执行资源 agent_runs）
+  - name: Agents
+  - name: Ontologies
+  - name: Plugins
+  - name: Tools
+  - name: Policies
+  - name: Approvals
+  - name: ERP
+  - name: Audit
+  - name: Evaluations
+  - name: PlanTemplates
+  - name: Tasks
+  - name: Stream
+  - name: BFF
+  - name: Health
+
+security:
+  - bearerAuth: []
+  - sessionCookie: []
+
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      summary: 存活探针（不要求认证）
+      security: []
+      operationId: healthz
+      responses:
+        "200":
+          description: 进程存活
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, service, version, time]
+                properties:
+                  status: { type: string, enum: [ok] }
+                  service: { type: string }
+                  version: { type: string }
+                  time: { type: string, format: date-time }
+
+  /readyz:
+    get:
+      tags: [Health]
+      summary: 就绪探针（探测数据库；未配置探针返回 503）
+      security: []
+      operationId: readyz
+      responses:
+        "200":
+          description: 依赖就绪
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, checks]
+                properties:
+                  status: { type: string, enum: [ok] }
+                  checks:
+                    type: object
+                    additionalProperties: { type: string }
+        "503":
+          description: 依赖不可用或探针未配置
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [unavailable] }
+                  checks:
+                    type: object
+                    additionalProperties: { type: string }
+
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: 基于组织注册新用户
+      operationId: authRegister
+      description: |
+        用户提供 org_code → 系统定位租户 → 创建 user + credentials (bcrypt) + membership
+        → 自动签发首个会话令牌。org_code 必须由管理员预先创建。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_code, login_name, display_name, password]
+              properties:
+                org_code:     { type: string, minLength: 1 }
+                login_name:   { type: string, minLength: 3 }
+                display_name: { type: string }
+                email:        { type: string, format: email }
+                password:     { type: string, minLength: 6 }
+      responses:
+        "201":
+          description: 注册成功 + 会话令牌
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: 密码登录
+      operationId: authLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login_name, password]
+              properties:
+                login_name: { type: string }
+                password:   { type: string }
+      responses:
+        "200":
+          description: 登录成功 + 会话令牌
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionResponse"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: 注销（撤销当前会话）
+      operationId: authLogout
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: 已注销 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/auth/session:
+    get:
+      tags: [Auth]
+      summary: 获取当前会话投影（用户信息 + 权限数组）
+      description: |
+        前端启动时调用一次（或 Bearer token 刷新后），拿到当前会话对应的
+        用户基本信息、租户信息、组织路径和权限键数组，用于初始化 SessionContext。
+        无 token / 会话已过期 → 401。
+      operationId: authSession
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: 会话投影
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [subject_id, login_name, display_name, tenant_id, tenant_name, org_path, permissions]
+                properties:
+                  subject_id:    { type: string, description: "用户 UUID" }
+                  login_name:    { type: string }
+                  display_name:  { type: string }
+                  email:         { type: string }
+                  tenant_id:     { type: string }
+                  tenant_name:   { type: string }
+                  org_path:      { type: string, description: "组织路径，如 财务部/费用组" }
+                  permissions:
+                    type: array
+                    items: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/runs:
+    get:
+      tags: [Runs]
+      summary: 查询 Run 列表
+      operationId: listRuns
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/RunStatus"
+        - name: created_after
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: created_before
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Run 分页列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunList"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Runs]
+      summary: 创建 Run
+      operationId: createRun
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRunRequest"
+      responses:
+        "201":
+          description: 已创建（初始状态 CREATED）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Run"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/runs/{id}:
+    get:
+      tags: [Runs]
+      summary: 查询 Run 状态、步骤与版本锁依赖
+      operationId: getRun
+      parameters:
+        - $ref: "#/components/parameters/RunIdPath"
+      responses:
+        "200":
+          description: Run 详情
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [run, steps, dependencies]
+                properties:
+                  run: { $ref: "#/components/schemas/Run" }
+                  steps:
+                    type: array
+                    items: { $ref: "#/components/schemas/RunStep" }
+                  dependencies:
+                    type: array
+                    items: { $ref: "#/components/schemas/RunDependency" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/runs/{id}/steps:
+    get:
+      tags: [Runs]
+      summary: 查询 Run 的执行步骤（本体审查的按本体处理过程）
+      operationId: listRunSteps
+      parameters:
+        - $ref: "#/components/parameters/RunIdPath"
+      responses:
+        "200":
+          description: 步骤列表（按 step_no 升序）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RunStepList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/runs/{id}/cancel:
+    post:
+      tags: [Runs]
+      summary: 请求取消 Run（统一入口，进入 CANCELLING）
+      operationId: cancelRun
+      parameters:
+        - $ref: "#/components/parameters/RunIdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/IfMatch"
+      responses:
+        "202":
+          description: 取消已受理（进入 CANCELLING，在途外部操作由取消收敛队列处理）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { $ref: "#/components/schemas/RunStatus" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/runs/{id}/reconcile:
+    post:
+      tags: [Runs]
+      summary: Run 级批量对账编排（异步）
+      operationId: reconcileRun
+      parameters:
+        - $ref: "#/components/parameters/RunIdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "202":
+          description: 对账任务已入队
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task_id, kind, status, status_url]
+                properties:
+                  task_id: { type: string }
+                  kind: { type: string, enum: [RUN_RECONCILIATION] }
+                  status: { type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED, CANCELLED] }
+                  status_url: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/runs/{id}/lease/renew:
+    post:
+      tags: [Runs]
+      summary: Worker 租约续期（内部端点语义，需携带 owner+epoch）
+      operationId: renewRunLease
+      parameters:
+        - $ref: "#/components/parameters/RunIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenewLeaseRequest"
+      responses:
+        "200":
+          description: 续期成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [run_id, lease_owner, lease_epoch, lease_expires_at]
+                properties:
+                  run_id: { type: string, format: uuid }
+                  lease_owner: { type: string }
+                  lease_epoch: { type: integer, format: int64 }
+                  lease_expires_at: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/agents:
+    get:
+      tags: [Agents]
+      summary: 查询 Agent 列表
+      operationId: listAgents
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          required: false
+          description: 状态筛选（ACTIVE/DISABLED/DELETED）
+          schema: { type: string }
+        - name: q
+          in: query
+          required: false
+          description: 关键字检索（agent_key / 名称 / 业务域）
+          schema: { type: string }
+      responses:
+        "200":
+          description: Agent 列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Agent" }
+                  next_cursor: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Agents]
+      summary: 创建 Agent（含首个 DRAFT 版本）
+      operationId: createAgent
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAgentRequest"
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedResource" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/agents/generate:
+    post:
+      tags: [Agents]
+      summary: 由需求/制度文档自动生成 Agent 定义（大模型 → DRAFT）
+      description: |
+        依据自然语言需求（instructions）与/或制度文档（source_path），调用已装配的
+        真实 HTTP 模型端点生成 Agent 定义（输入/输出 Schema、提示词、依赖工具），
+        落库为首个 DRAFT 版本。模型网关未装配或输出不合法时明确失败，绝不返回假结果。
+      operationId: generateAgent
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                instructions: { type: string, description: 自然语言需求 }
+                source_path: { type: string, description: 相对制度文档根目录的路径 }
+                agent_key: { type: string }
+                domain: { type: string }
+                model_id: { type: string }
+                max_source_chars: { type: integer }
+      responses:
+        "201":
+          description: 已生成并落库为 DRAFT
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedResource" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/agents/{id}:
+    get:
+      tags: [Agents]
+      summary: 查询 Agent 详情（含最新版本）
+      operationId: getAgent
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200": { description: Agent 详情 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Agents]
+      summary: 更新 Agent 元数据（agent_key 不可变）
+      operationId: updateAgent
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                description: { type: string }
+                domain: { type: string }
+      responses:
+        "200": { description: 已更新 }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Agents]
+      summary: 删除 Agent（软删除，status → DELETED）
+      operationId: deleteAgent
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204": { description: 已删除 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/agents/{id}/publish:
+    post:
+      tags: [Agents]
+      summary: 发布 Agent 最新版本
+      operationId: publishAgent
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version: { type: string }
+      responses:
+        "200":
+          description: 已发布
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent_id: { type: string, format: uuid }
+                  version_id: { type: string, format: uuid }
+                  status: { type: string, enum: [PUBLISHED] }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/ontologies:
+    get:
+      tags: [Ontologies]
+      summary: 查询本体列表
+      operationId: listOntologies
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          required: false
+          description: 状态筛选（ACTIVE/INACTIVE/ARCHIVED；软删除条目始终排除）
+          schema: { type: string }
+        - name: q
+          in: query
+          required: false
+          description: 关键字检索（本体键 / 名称）
+          schema: { type: string }
+      responses:
+        "200":
+          description: 本体列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Ontology" }
+                  next_cursor: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Ontologies]
+      summary: 创建本体（含首个 DRAFT 版本）
+      operationId: createOntology
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOntologyRequest"
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedResource" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/ontologies/generate:
+    post:
+      tags: [Ontologies]
+      summary: 由制度文档自动生成本体（大模型 → DRAFT）
+      description: |
+        读取制度文档，抽取正文后调用已装配的真实 HTTP 模型端点生成结构化本体清单，
+        落库为首个 DRAFT 版本。模型网关未装配、文档不可解析、模型输出不满足结构约束时
+        一律明确失败（503/422），绝不返回假成功或占位内容。
+
+        请求体支持两种形式，**二者二选一**；同时提供或都不提供一律 400：
+        - `multipart/form-data`：字段 `file`，从本地选择制度文档（.docx/.doc/.xlsx/.md）；
+        - `application/json`：字段 `source_path`，相对制度文档根目录（默认 docs/资料）的路径。
+
+        两者都允许附加相同的生成参数（ontology_key/name/domain/granularity/description/
+        category_id/model_id/max_source_chars）。
+      operationId: generateOntology
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary, description: "本地制度文档（.docx/.doc/.xlsx/.md）；与 source_path 二选一" }
+                ontology_key: { type: string }
+                name: { type: string }
+                domain: { type: string, description: "业务领域；token 恒等于所选业务领域分类的 category_code" }
+                granularity: { type: string, description: "如 DOMAIN/ENTITY" }
+                description: { type: string }
+                category_id: { type: string, format: uuid }
+                model_id: { type: string, description: "指定模型；留空则按能力择优" }
+                max_source_chars: { type: integer }
+          application/json:
+            schema:
+              type: object
+              required: [source_path]
+              properties:
+                source_path: { type: string, description: 相对制度文档根目录的文件或目录路径 }
+                ontology_key: { type: string }
+                name: { type: string }
+                domain: { type: string, description: "业务领域；恒等于所选业务领域分类的 category_code" }
+                granularity: { type: string, description: "如 DOMAIN/ENTITY" }
+                description: { type: string }
+                category_id: { type: string, format: uuid }
+                model_id: { type: string, description: "指定模型；留空则按能力择优" }
+                max_source_chars: { type: integer }
+      responses:
+        "201":
+          description: 已生成并落库为 DRAFT
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedResource" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/ontologies/{id}/validate:
+    post:
+      tags: [Ontologies]
+      summary: 校验本体版本（SHACL 结构化子集）
+      description: |
+        **同步**执行一次真实的形状校验（不返回 202 任务引用），流程为：
+        manifest 结构与闭包校验 → 投影 SHACL 形状 → 把 TBox/ABox 幂等装载进
+        按 (ontology_key, version_id) 确定性派生的命名图 → 反假绿探针 →
+        shacl.Validate → 落 ontology.validation_runs 与 ontology.validation_findings
+        → 版本状态流转为 VALID / REJECTED（随后由 PublishOntology 的既有门禁放行）。
+
+        两种情形一律 **422**，而不是返回一个空洞的"通过"：
+        - manifest.shapes 为空——没有形状就没有可执行的约束；
+        - 图中属于 sh:targetClass 的实例数为 0——此时 SHACL 按规范返回
+          conforms=true，但那是"没数据可查"，不是"数据合规"（即反假绿探针）。
+
+        未装配图存储时返回 503 并说明原因：校验必须真读图，无法在无图存储时给结论。
+        当前仅执行 SHACL 子集；`checks.owl_consistent` 与 `checks.business_rules_valid`
+        恒为 null，表示**该项检查未执行**（并非"执行了且不通过"）。
+      operationId: validateOntology
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: 校验已执行，结论见 conforms 与 version_status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OntologyValidationReport" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/ontologies/{id}/artifacts:
+    get:
+      tags: [Ontologies]
+      summary: 查看本体产物（知识图谱 + RDF / OWL / SHACL 文本）
+      description: |
+        由最新版本的 manifest **派生**两张图与三份文本，不读图存储、也不要求先跑校验，
+        因此 DRAFT 版本同样可见。产物与校验时实际装载进命名图、实际求值的形状逐条一致
+        （复用同一份投影实现）。
+
+        - `graph.ontology`：本体结构图（类 + 关系 + 实例），`graph.ontology_tbox_only`
+          是它的"只含类与关系"版本（界面用「显示实例」开关在两者间切换）；
+        - `graph.shapes`：形状约束图（形状 → 目标类 / 约束项）；
+        - `rdf`：TBox（术语层）+ ABox（实例层）全部三元组，Turtle；
+        - `shacl`：由 manifest.shapes 投影出的形状，Turtle；
+        - `owl`：术语层公理（owl:Class / owl:ObjectProperty /
+          owl:DatatypeProperty + rdfs:domain/range），RDF/XML。
+
+        `manifest.shapes` 为空是正常状态：`shacl.content` 只含前缀声明、
+        `graph.shapes` 是空图，界面据此显示空态，**不伪造**内容，HTTP 仍为 200。
+        manifest 结构或闭包非法时返回 422，且不产出任何（半份）产物文本与图。
+      operationId: getOntologyArtifacts
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: 三份产物文本
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OntologyArtifacts" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/ontologies/{id}:
+    get:
+      tags: [Ontologies]
+      summary: 查询本体详情
+      operationId: getOntology
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: 本体详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OntologyDetail" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+    patch:
+      tags: [Ontologies]
+      summary: 更新本体元数据与启停状态
+      operationId: updateOntology
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string }
+                status:
+                  type: string
+                  description: 本体级启停状态；省略则不改动。停用不改变版本生命周期。
+                  enum: [ACTIVE, INACTIVE]
+      responses:
+        "200": { description: 已更新 }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Ontologies]
+      summary: 删除本体（软删除）
+      operationId: deleteOntology
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204": { description: 已删除 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/ontologies/{id}/publish:
+    post:
+      tags: [Ontologies]
+      summary: 发布本体版本到目标环境
+      operationId: publishOntology
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version: { type: string }
+                environment: { type: string, enum: [DEVELOPMENT, STAGING, PRODUCTION] }
+      responses:
+        "200":
+          description: 已发布
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ontology_id: { type: string, format: uuid }
+                  version_id: { type: string, format: uuid }
+                  environment: { type: string }
+                  status: { type: string, enum: [PUBLISHED] }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/plugins:
+    get:
+      tags: [Plugins]
+      summary: 查询插件列表
+      operationId: listPlugins
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: 插件列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Plugin" }
+                  next_cursor: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Plugins]
+      summary: 注册插件（含首个 DRAFT 版本）
+      operationId: createPlugin
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePluginRequest"
+      responses:
+        "201":
+          description: 已注册
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedResource" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/plugins/{id}:
+    get:
+      tags: [Plugins]
+      summary: 查询插件详情（含版本列表）
+      operationId: getPlugin
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200": { description: 插件详情 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Plugins]
+      summary: 更新插件元数据
+      operationId: updatePlugin
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string }
+      responses:
+        "200": { description: 已更新 }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Plugins]
+      summary: 删除插件（软删除 + 禁用所有已安装实例）
+      operationId: deletePlugin
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204": { description: 已删除 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/plugins/{id}/enable:
+    post:
+      tags: [Plugins]
+      summary: 为当前租户启用插件（幂等）
+      operationId: enablePlugin
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                config:
+                  type: object
+                  additionalProperties: true
+      responses:
+        "200":
+          description: 已启用
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plugin_id: { type: string, format: uuid }
+                  plugin_version_id: { type: string, format: uuid }
+                  installation_state: { type: string, enum: [ACTIVE] }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/tools:
+    get:
+      tags: [Tools]
+      summary: 查询工具列表
+      operationId: listTools
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: effect_class
+          in: query
+          required: false
+          schema: { type: string, enum: [READ, EXTERNAL_WRITE, INTERNAL_WRITE] }
+        - name: status
+          in: query
+          required: false
+          description: 状态筛选（ACTIVE/DISABLED/DELETED）
+          schema: { type: string }
+        - name: q
+          in: query
+          required: false
+          description: 关键字检索（tool_key / 说明）
+          schema: { type: string }
+      responses:
+        "200":
+          description: 工具列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Tool" }
+                  next_cursor: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Tools]
+      summary: 创建工具（含首个 DRAFT 版本）
+      operationId: createTool
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateToolRequest"
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedResource" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/tools/generate:
+    post:
+      tags: [Tools]
+      summary: 由需求/制度文档自动生成工具定义（大模型 → DRAFT）
+      description: |
+        依据自然语言需求（instructions）与/或制度文档（source_path），调用已装配的
+        真实 HTTP 模型端点生成工具定义（输入/输出 Schema、能力标签、effect_class），
+        落库为首个 DRAFT 版本。模型网关未装配或输出不合法时明确失败，绝不返回假结果。
+      operationId: generateTool
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                instructions: { type: string }
+                source_path: { type: string }
+                tool_key: { type: string }
+                model_id: { type: string }
+                max_source_chars: { type: integer }
+      responses:
+        "201":
+          description: 已生成并落库为 DRAFT
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedResource" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/tools/{id}:
+    get:
+      tags: [Tools]
+      summary: 查询工具详情（含 effect_class）
+      operationId: getTool
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200": { description: 工具详情 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Tools]
+      summary: 更新工具描述
+      operationId: updateTool
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                description: { type: string }
+      responses:
+        "200": { description: 已更新 }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Tools]
+      summary: 删除工具（软删除）
+      operationId: deleteTool
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204": { description: 已删除 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/tools/{id}/invoke:
+    post:
+      tags: [Tools]
+      summary: 受控调用工具（真实执行 / 外部写入建待审批）
+      description: |
+        服务端按 `execution_config.adapter` 派发真实执行器（ERP 端口 / 文档解析 /
+        SHACL 校验 / 模型治理网关 / 审计哈希链等），结果如实落库
+        `runtime.tool_invocations`，**不返回假成功**。
+        - READ / INTERNAL_WRITE：同步执行，返回 200 + 终态记录；
+        - EXTERNAL_WRITE：返回 202 + 待审批记录（PENDING_APPROVAL），
+          须经 `.../invocations/{inv_id}/approve` 批准后才真实执行，驳回则永不执行；
+        - 无真实后端的能力（如 OCR / 预算）返回 503 UNAVAILABLE 并说明原因。
+      operationId: invokeTool
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                args:
+                  type: object
+                  additionalProperties: true
+      responses:
+        "200":
+          description: 同步执行完成（终态记录：成功或真实失败）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ToolInvocation" }
+        "202":
+          description: 外部写入已受理，等待人工审批（status=PENDING_APPROVAL）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ToolInvocation" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/tools/{id}/invocations:
+    get:
+      tags: [Tools]
+      summary: 查询工具调用记录（cursor 分页 + 状态筛选，默认 10 行/页）
+      operationId: listToolInvocations
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          required: false
+          description: 调用状态筛选（PENDING_APPROVAL/APPROVED/EXECUTING/SUCCEEDED/FAILED/REJECTED）
+          schema: { type: string }
+      responses:
+        "200":
+          description: 调用记录列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ToolInvocation" }
+                  next_cursor: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/tools/{id}/invocations/{inv_id}/approve:
+    post:
+      tags: [Tools]
+      summary: 批准外部写入调用（批准后才真实执行）
+      operationId: approveToolInvocation
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/InvIdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: 已批准并执行（终态记录 SUCCEEDED / FAILED）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ToolInvocation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/tools/{id}/invocations/{inv_id}/reject:
+    post:
+      tags: [Tools]
+      summary: 驳回外部写入调用（该调用永不执行）
+      operationId: rejectToolInvocation
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/InvIdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: 已驳回（status=REJECTED）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ToolInvocation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/workflows:
+    get:
+      tags: [Workflows]
+      summary: 查询工作流列表（插件式，plugin_kind=WORKFLOW）
+      operationId: listWorkflows
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          required: false
+          description: 状态筛选（ACTIVE/DISABLED/DELETED）
+          schema: { type: string }
+        - name: q
+          in: query
+          required: false
+          description: 关键字检索（workflow_key / 名称）
+          schema: { type: string }
+      responses:
+        "200":
+          description: 工作流列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Workflow" }
+                  next_cursor: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Workflows]
+      summary: 创建工作流（含首个 DRAFT 版本与所属插件）
+      operationId: createWorkflow
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workflow_key, name, definition]
+              properties:
+                workflow_key: { type: string }
+                name: { type: string }
+                description: { type: string }
+                version: { type: string }
+                definition:
+                  type: object
+                  additionalProperties: true
+                input_schema:
+                  type: object
+                  additionalProperties: true
+                output_schema:
+                  type: object
+                  additionalProperties: true
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedResource" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/workflows/generate:
+    post:
+      tags: [Workflows]
+      summary: 由需求/制度文档自动生成工作流定义（大模型 → DRAFT）
+      description: |
+        依据自然语言需求（instructions）与/或制度文档（source_path），调用已装配的
+        真实 HTTP 模型端点生成工作流编排定义（nodes/edges + 输入输出契约），
+        落库为首个 DRAFT 版本。模型网关未装配或输出不合法时明确失败，绝不返回假结果。
+      operationId: generateWorkflow
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                instructions: { type: string }
+                source_path: { type: string }
+                workflow_key: { type: string }
+                model_id: { type: string }
+                max_source_chars: { type: integer }
+      responses:
+        "201":
+          description: 已生成并落库为 DRAFT
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedResource" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/workflows/{id}:
+    get:
+      tags: [Workflows]
+      summary: 查询工作流详情（含最新版本 definition）
+      operationId: getWorkflow
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200": { description: 工作流详情 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Workflows]
+      summary: 更新工作流元数据
+      operationId: updateWorkflow
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string }
+      responses:
+        "200": { description: 已更新 }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Workflows]
+      summary: 删除工作流（软删除）
+      operationId: deleteWorkflow
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204": { description: 已删除 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/workflows/{id}/publish:
+    post:
+      tags: [Workflows]
+      summary: 发布工作流最新版本
+      operationId: publishWorkflow
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version: { type: string }
+      responses:
+        "200":
+          description: 已发布
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workflow_id: { type: string, format: uuid }
+                  version_id: { type: string, format: uuid }
+                  status: { type: string, enum: [PUBLISHED] }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/policies:
+    get:
+      tags: [Policies]
+      summary: 查询策略（每个 policy_key 的最新版本）
+      operationId: listPolicies
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [DRAFT, VALIDATING, PUBLISHED, DISABLED, RETIRED] }
+      responses:
+        "200":
+          description: 策略列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/PolicyVersion" }
+                  next_cursor: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Policies]
+      summary: 创建策略版本（JSON DSL 校验）
+      operationId: createPolicy
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePolicyRequest"
+      responses:
+        "201":
+          description: 已创建（DRAFT）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedResource" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/policies/{id}/versions:
+    get:
+      tags: [Policies]
+      summary: 查询某策略键的全部版本（路径参数为 policy_key）
+      operationId: listPolicyVersions
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: policy_key
+          schema: { type: string }
+      responses:
+        "200":
+          description: 版本列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/PolicyVersion" }
+                  next_cursor: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/policies/{key}/versions/{version}:
+    patch:
+      tags: [Policies]
+      summary: 更新策略版本状态（DRAFT→PUBLISHED→DEPRECATED）
+      operationId: updatePolicyStatus
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+        - name: version
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [PUBLISHED, DEPRECATED, DRAFT] }
+      responses:
+        "200": { description: 已更新 }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [Policies]
+      summary: 删除策略版本（仅 DRAFT / DEPRECATED 允许）
+      operationId: deletePolicyVersion
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+        - name: version
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204": { description: 已删除 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/approvals:
+    get:
+      tags: [Approvals]
+      summary: 查询审批列表
+      operationId: listApprovals
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [PENDING, APPROVED, REJECTED, CANCELLED, EXPIRED, INVALIDATED] }
+      responses:
+        "200":
+          description: 审批列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Approval" }
+                  next_cursor: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/approvals/{id}:
+    get:
+      tags: [Approvals]
+      summary: 查询审批详情（含决策动作）
+      operationId: getApproval
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: 审批详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Approval" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/approvals/{id}/decision:
+    post:
+      tags: [Approvals]
+      summary: 审批决策（追加式；禁止自我审批）
+      operationId: decideApproval
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/IfMatch"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [APPROVE, REJECT] }
+                comment: { type: string }
+      responses:
+        "200":
+          description: 决策已记录
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, enum: [APPROVED, REJECTED] }
+                  decision: { type: string, enum: [APPROVE, REJECT] }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/erp/capabilities:
+    get:
+      tags: [ERP]
+      summary: ERP 能力发现
+      operationId: getERPCapabilities
+      parameters:
+        - name: connection_id
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: 能力声明
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ERPCapabilities" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/erp/operations/{id}/reconcile:
+    post:
+      tags: [ERP]
+      summary: 单笔 ERP 操作对账
+      description: |
+        单笔对账需装配 OperationGateway（PortResolver/授权/审批校验）与
+        integration.erp_operations 账本；当前 API 进程未接入，返回 503 并说明。
+      operationId: reconcileEROperation
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: 单笔操作结果
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ERPCapabilities" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/runs/{id}/erp-operations:
+    get:
+      tags: [ERP]
+      summary: 查询某次运行产生的 ERP 操作账本（cursor 分页，默认 10 行/页）
+      operationId: listRunErpOperations
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: 操作账本列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ERPOperation" }
+                  next_cursor: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/admin/erp-systems:
+    get:
+      tags: [ERP]
+      summary: ERP 系统类型字典（全局只读，默认用友NC65）
+      description: |
+        integration.erp_systems 为全局字典：系统编码 / 显示名 / 适配器键 /
+        是否已实现适配器 / 是否默认。未实现适配器的类型（如金蝶星空云 / SAP）
+        在前端明确标注，创建连接时会被拒绝（fail-closed）。
+      operationId: listErpSystems
+      responses:
+        "200":
+          description: ERP 系统字典
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ErpSystem" }
+                  next_cursor: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/admin/erp-connections:
+    get:
+      tags: [ERP]
+      summary: 查询租户级 ERP 连接（cursor 分页 + 状态/系统/关键字筛选，默认 10 行/页）
+      operationId: listErpConnections
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [ACTIVE, DISABLED, DELETED] }
+        - name: system_code
+          in: query
+          required: false
+          schema: { type: string }
+        - name: q
+          in: query
+          required: false
+          description: 关键字检索（连接名 / base_url）
+          schema: { type: string }
+      responses:
+        "200":
+          description: 连接列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ErpConnection" }
+                  next_cursor: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+    post:
+      tags: [ERP]
+      summary: 新建 ERP 连接（凭据密文优先落库）
+      description: |
+        凭据双路径且密文优先：`credential` 以 AES-256-GCM 信封加密后落库；
+        未提供 `credential` 时回落 `credential_ref` 环境变量引用；明文绝不回显
+        （读取仅回打码值）。未实现适配器的 `system_code` 一律拒绝。
+      operationId: createErpConnection
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ErpConnectionInput" }
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErpConnection" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/admin/erp-connections/test:
+    post:
+      tags: [ERP]
+      summary: 连接测试（用录入参数直连真实探针，不入库、不产生业务写入）
+      operationId: testErpConnection
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [system_code, base_url]
+              properties:
+                system_code: { type: string }
+                base_url: { type: string }
+                credential:
+                  type: object
+                  additionalProperties: { type: string }
+      responses:
+        "200":
+          description: 测试结果（reachable / healthy / message）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reachable, message]
+                properties:
+                  reachable: { type: boolean }
+                  healthy: { type: boolean }
+                  status: { type: string }
+                  message: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/admin/erp-connections/{id}:
+    patch:
+      tags: [ERP]
+      summary: 编辑 ERP 连接（凭据三态：省略=不改 / 非空=替换 / 空=清空）
+      operationId: updateErpConnection
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ErpConnectionInput" }
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErpConnection" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      tags: [ERP]
+      summary: 删除 ERP 连接（软删除，status=DELETED）
+      operationId: deleteErpConnection
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  status: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/audit-events:
+    get:
+      tags: [Audit]
+      summary: 审计事件查询（cursor 分页，默认 10 条/页）
+      operationId: listAuditEvents
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: run_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+        - name: resource_type
+          in: query
+          required: false
+          schema: { type: string }
+        - name: action
+          in: query
+          required: false
+          schema: { type: string }
+        - name: event_type
+          in: query
+          required: false
+          schema: { type: string }
+        - name: outcome
+          in: query
+          required: false
+          description: |
+            按事件结论等值过滤（自由文本，不枚举校验）。实际写入的取值包括
+            SUCCESS（执行成功）、DENIED（被拒绝/未授权）、REJECTED（被驳回）、
+            ERROR（执行报错）。
+          schema: { type: string }
+        - name: actor_id
+          in: query
+          required: false
+          description: 主体 ID 等值过滤（audit.audit_events.actor_id）
+          schema: { type: string }
+        - name: occurred_after
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: 审计事件列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/AuditEvent" }
+                  next_cursor: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/evaluations:
+    get:
+      tags: [Evaluations]
+      summary: 查询评估运行列表
+      operationId: listEvaluations
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: 评估运行列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/EvaluationRun" }
+                  next_cursor: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Evaluations]
+      summary: 创建评估运行（含仿真与回归）
+      operationId: createEvaluation
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEvaluationRequest"
+      responses:
+        "202":
+          description: 评估运行已入队
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, enum: [QUEUED] }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/evaluations/{id}:
+    get:
+      tags: [Evaluations]
+      summary: 查询评估运行详情（含指标结果）
+      operationId: getEvaluation
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: 评估运行详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvaluationRun" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/plan-templates:
+    get:
+      tags: [PlanTemplates]
+      summary: 查询工作流模板资产
+      description: |
+        模板资产与执行计划**共用** planning.plans / planning.plan_revisions 两张表，
+        以 plans.status = 'TEMPLATE' 为判别值区分"可复用模板"与"执行实例"。
+        （本段此前断言"无 plan_templates 持久表，返回 503"，该断言在种子写入模板行
+        之后已失真，见缺陷 #24。）
+        返回每个模板的**最新修订**投影：name / ontology_ref 取自 plan_ir，
+        node_kinds 由 plan_ir.steps[].kind 展开（对齐第十七篇 §7.3 节点词表），
+        state 由修订的 validation_status 归一为大写生命周期值。
+      operationId: listPlanTemplates
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: 工作流模板分页列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlanTemplateList"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [PlanTemplates]
+      summary: 创建工作流模板资产
+      description: |
+        MVP 未实现模板写入路径——模板资产当前由数据集种子
+        （datasets/finance-demo/plans.json）注入，因此返回 503 并说明，
+        绝不返回空列表或伪成功。
+      operationId: createPlanTemplate
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        "201":
+          description: 已创建（写入能力落地后启用）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedResource" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/tasks/{id}:
+    get:
+      tags: [Tasks]
+      summary: 异步任务状态（带退避轮询）
+      description: |
+        异步任务在数据模型上不单独建表，任务引用指向其承载资源：任务 ID = run_id，
+        kind = RUN，state 由 Run 状态派生（contracts/01 §5.1：任务终态不得翻译为
+        "业务已成功"）。
+      operationId: getTask
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: 任务状态
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Task" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/stream:
+    get:
+      tags: [Stream]
+      summary: 统一实时通道（SSE）
+      description: |
+        服务端事件流（text/event-stream）。
+
+        - 按租户过滤事件；
+        - 支持 Last-Event-ID 续传（请求头 `Last-Event-ID` 或查询参数
+          `last_event_id`；`_` 表示从头回放当前有界缓冲）；
+        - 事件分级 CRITICAL / IMPORTANT / NORMAL：背压时只丢弃 NORMAL，
+          CRITICAL/IMPORTANT 在订阅者过慢时强制断开（客户端携带
+          Last-Event-ID 重连补齐）；
+        - 15s 心跳注释（`: heartbeat`）；
+        - 每条事件的 data 为 `{"criticality":"<级别>","payload":<事件载荷>}`。
+      operationId: streamEvents
+      parameters:
+        - name: last_event_id
+          in: query
+          required: false
+          schema: { type: string }
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: 事件流
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/workspace/summary:
+    get:
+      tags: [BFF]
+      summary: 业务工作台聚合摘要（第十七篇 §11.1）
+      operationId: workspaceSummary
+      responses:
+        "200":
+          description: 聚合摘要
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceSummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/workspace/ontologies:
+    get:
+      tags: [BFF]
+      summary: 业务工作台可用本体清单（本体驱动审查的可选规则来源）
+      operationId: listWorkspaceOntologies
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: 本体分页列表（与管理端本体列表口径一致）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Ontology" }
+                  next_cursor: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/apps:
+    get:
+      tags: [BFF]
+      summary: 业务应用视图（口径 = 企业本体 + 最新版本）
+      operationId: listApps
+      responses:
+        "200":
+          description: 应用列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/App" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/admin/overview:
+    get:
+      tags: [BFF]
+      summary: 管理控制台总览计数
+      operationId: adminOverview
+      responses:
+        "200":
+          description: 总览
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminOverview" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/admin/roles:
+    get:
+      tags: [BFF]
+      summary: 角色清单（cursor 分页 + 关键字筛选，默认 10 行/页）
+      operationId: adminRoles
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: q
+          in: query
+          required: false
+          description: 关键字检索（role_key / name）
+          schema: { type: string }
+      responses:
+        "200":
+          description: 角色列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RoleList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Admin]
+      summary: 新建自定义角色（人工重建）
+      description: |
+        平台只内置一个系统管理员角色（is_system_role=TRUE）；本端点创建的自定义角色
+        恒为 is_system_role=FALSE。`permissions` 中的权限键必须已存在于全局权限目录，
+        否则返回 400（禁止写入"伪权限"，避免授权展开时静默失效）。
+      operationId: adminCreateRole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role_key, name]
+              properties:
+                role_key:    { type: string }
+                name:        { type: string }
+                description: { type: string }
+                permissions:
+                  type: array
+                  items: { type: string }
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Role" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/admin/roles/{id}:
+    delete:
+      tags: [Admin]
+      summary: 删除自定义角色
+      description: |
+        系统内置角色恒不可删除（避免管理员把自己锁死）；仍被角色绑定引用的角色
+        不可删除，返回 409 并提示先解绑。
+      operationId: adminDeleteRole
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204": { description: 已删除 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/admin/permissions:
+    get:
+      tags: [Admin]
+      summary: 权限目录（供角色创建选择真实权限键）
+      operationId: adminPermissions
+      responses:
+        "200": { description: 权限目录 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/admin/role-bindings:
+    get:
+      tags: [BFF]
+      summary: 角色绑定清单（含主体与范围；cursor 分页 + 关键字筛选，默认 10 行/页）
+      operationId: adminRoleBindings
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: q
+          in: query
+          required: false
+          description: 关键字检索（role_key / role_name / login_name）
+          schema: { type: string }
+      responses:
+        "200":
+          description: 角色绑定列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RoleBindingList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Admin]
+      summary: 分配角色（把角色绑定到某 membership）
+      description: |
+        把 role 绑定到指定 membership；scope_type 决定可见范围（第七篇）。
+        `scope_org_id` 仅在 scope_type 为 ORG / ORG_SUBTREE 时必填。
+      operationId: adminBindRole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [membership_id, role_id, scope_type]
+              properties:
+                membership_id: { type: string, format: uuid }
+                role_id:       { type: string, format: uuid }
+                scope_type:    { type: string, enum: [TENANT, ORG, ORG_SUBTREE, SELF, ASSIGNED, EXPLICIT] }
+                scope_org_id:  { type: string, format: uuid }
+      responses:
+        "201": { description: 已创建 }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/admin/model-providers:
+    get:
+      tags: [BFF]
+      summary: 模型供应商与端点
+      operationId: adminModelProviders
+      responses:
+        "200":
+          description: 供应商与端点
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelProviders" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [BFF]
+      summary: 新建模型供应商（含首个端点）
+      description: |
+        在**单事务**内创建供应商与其**首个端点**。为什么不能只建供应商：
+        llm.providers 本身不含地址与凭据，只有端点带 base_url / credential_ref 才可能
+        被 Model Registry 装配（第九篇 §4.4；internal/llm/registry.go 对 HTTP 端点缺
+        base_url 或缺 credential_ref 一律 fail-closed），只建供应商会留下**永远无法
+        被调用**的空壳，因此 endpoint 为必填。
+
+        **凭据安全（§8.2 / §13.2）**：HTTP 端点的凭据来源二选一 ——
+        ① `credential_ref`（秘密存储中的**引用名**，如 ODAP_LLM_API_KEY；凭据仍只在进程环境里）；
+        ② `api_key`（界面录入的**明文密钥**，只入不出）。服务端对 `api_key` 用
+        AES-256-GCM 信封加密后落库（llm.endpoints.credential_ciphertext），响应与审计
+        **绝不回显明文**：对外只给 `credential_source`（CIPHERTEXT / ENV_REF / NONE）、
+        `credential_masked`（如 sk-****6e22）与 `has_credential`。未配置主密钥
+        （ODAP_SECRET_MASTER_KEY）且走 `api_key` 路径时 fail-closed 返回 503。
+
+        `provider_id` 缺省时由 `display_name` 派生（小写、非 [a-z0-9] 归一为 '-'）；
+        `provider_id` 是 llm.providers 的主键（TEXT），重复返回 409 CONFLICT。
+      operationId: createModelProvider
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateModelProviderRequest" }
+      responses:
+        "201":
+          description: 已创建（返回供应商与端点标识）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedModelProvider" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/admin/model-providers/probe:
+    post:
+      tags: [BFF]
+      summary: 录入前连通性探测（真实试调一次）
+      description: |
+        用**请求体中刚填的参数**对模型端点真实试调一次，用于录入窗口的「测试连接」。
+
+        **无副作用边界**：不落库、不写用量账本（账本是业务推理的对账真值，探测会污染它）；
+        审计只记录 deployment_type / 目标主机（去 userinfo 与查询串）/ 结果，**绝不含密钥**。
+        应用户反复调整参数重复调用，故**不读 Idempotency-Key**（探测本身无写副作用，天然幂等）。
+
+        `api_key` 允许随请求携带（只入不出，用于本次探测）；`credential_ref` 则按引用名从
+        进程环境解析。二者对 HTTP 端点二选一。探测失败以 `probe.ok=false` 返回具体诊断，
+        而非 5xx（配置填错是预期内的诊断结果，不是系统故障）。
+      operationId: probeModelProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProbeModelProviderRequest" }
+      responses:
+        "200":
+          description: 探测结果（成功与否均在体内表达）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [probe]
+                properties:
+                  probe: { $ref: "#/components/schemas/ProbeResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/admin/model-providers/{id}:
+    get:
+      tags: [BFF]
+      summary: 查询模型供应商详情（含端点）
+      operationId: getModelProvider
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: provider_id（llm.providers 的 TEXT 主键）
+          schema: { type: string }
+      responses:
+        "200": { description: 供应商详情 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [BFF]
+      summary: 更新模型供应商元数据（display_name / status）
+      operationId: updateModelProvider
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                display_name: { type: string }
+                status: { type: string, enum: [ACTIVE, DISABLED] }
+      responses:
+        "200": { description: 已更新 }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [BFF]
+      summary: 删除模型供应商（单事务级联名下端点，物理删除）
+      operationId: deleteModelProvider
+      description: |
+        下游保护：若名下端点被 llm.model_revisions 或 llm.usage_ledger 引用
+        （审计链），返回 409 并提示改为停用（PATCH status=DISABLED）；
+        否则在单事务内先删名下端点、再删供应商。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204": { description: 已删除 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/admin/model-providers/{id}/endpoints:
+    post:
+      tags: [BFF]
+      summary: 给已有模型供应商新增端点
+      operationId: addModelEndpoint
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: provider_id（llm.providers 的 TEXT 主键）
+          schema: { type: string }
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpoint_name, deployment_type]
+              properties:
+                endpoint_name:
+                  type: string
+                  description: 端点名（如 acme-default）
+                deployment_type:
+                  type: string
+                  enum: [HTTP]
+                  description: 仅支持 HTTP（MOCK 部署形态已下线）
+                region_code:
+                  type: string
+                base_url:
+                  type: string
+                  description: HTTP 端点必填，须以 http(s):// 开头
+                credential_ref:
+                  type: string
+                  description: 秘密存储中的引用名（如 ODAP_LLM_API_KEY）；与 api_key 二选一
+                api_key:
+                  type: string
+                  description: |
+                    明文密钥（**只入不出**）：与 credential_ref 二选一对立。
+                    服务端 AES-256-GCM 加密落库，响应只回 credential_masked / credential_source。
+                status:
+                  type: string
+                  enum: [ACTIVE, DISABLED]
+                  default: ACTIVE
+      responses:
+        "201": { description: 已创建端点（返回 endpoint_id） }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/admin/model-endpoints/{endpoint_id}:
+    patch:
+      tags: [BFF]
+      summary: 白名单更新模型端点
+      operationId: updateModelEndpoint
+      parameters:
+        - name: endpoint_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "至少提供一个字段；deployment_type 改动时须同时补齐对应网络字段"
+              properties:
+                endpoint_name: { type: string }
+                deployment_type: { type: string, enum: [HTTP], description: 仅支持 HTTP（MOCK 已下线） }
+                region_code: { type: string }
+                base_url: { type: string }
+                credential_ref: { type: string }
+                api_key:
+                  type: string
+                  nullable: true
+                  description: |
+                    明文密钥（只入不出），**三态**：
+                    省略 = 不改动现有密钥；非空 = 替换为新的密文凭据；显式空串 = 清空密文凭据
+                    （此后 HTTP 端点必须保留非空 credential_ref，否则 400）。
+                    与 credential_ref 不可同时提供。
+                status: { type: string, enum: [ACTIVE, DISABLED] }
+      responses:
+        "200": { description: 已更新 }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [BFF]
+      summary: 删除模型端点（带下游保护）
+      operationId: deleteModelEndpoint
+      description: |
+        删除保护：① 无 llm.model_revisions 引用；② 无 llm.usage_ledger 账本引用
+        （账本是审计真值不可硬删）。任一命中返回 409 Conflict 并附具体原因。
+        （不再限制"供应商必须剩余其他端点"：零端点供应商会被装配期忽略，无需此约束。）
+      parameters:
+        - name: endpoint_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204": { description: 已删除 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/admin/model-endpoints/{endpoint_id}/models:
+    get:
+      tags: [BFF]
+      summary: 列出端点已登记的模型版本
+      description: |
+        列出该端点下的 llm.model_revisions（连同其内容寻址的能力档案 llm.capability_profiles）。
+        空列表表示尚未登记任何模型版本 —— 此时端点在装配期被排除（原因"该端点尚未登记任何
+        模型版本"），自动生成端点会以「模型网关未装配」fail-closed 拒绝，而非静默返回假结果。
+      operationId: listModelRevisions
+      parameters:
+        - name: endpoint_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: 该端点的模型版本列表
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelRevisionList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [BFF]
+      summary: 登记模型版本（写能力档案 + 模型版本）
+      description: |
+        一次登记同时写入**内容寻址的能力档案**（llm.capability_profiles）与**模型版本**
+        （llm.model_revisions）。这是让端点真正参与路由、自动生成可用的唯一路径：二者
+        缺一，端点都会被装配期排除。
+
+        能力档案主键 = 规范化 `capabilities` 的 SHA-256，由服务端计算，`capabilities`
+        字段名拼错会被直接拒绝（不静默取零值）。`max_context_tokens` 必须为正整数，否则
+        该模型会在装配期被排除。
+
+        同 `(endpoint_id, model_id, revision_label)` 重复登记走更新（并置回 ACTIVE），
+        不会新增重复行。
+      operationId: registerModelRevision
+      parameters:
+        - name: endpoint_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterModelRevisionRequest" }
+      responses:
+        "201":
+          description: 已登记
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RegisteredModelRevision" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/admin/model-endpoints/{endpoint_id}/models/{model_revision_id}:
+    delete:
+      tags: [BFF]
+      summary: 删除模型版本登记（带下游保护）
+      description: |
+        删除保护：该 model_revision_id 已被 llm.usage_ledger 引用（即已产生真实调用账本）时
+        返回 409 Conflict —— 账本是审计真值，不能因删除登记行而指向不存在的版本。
+        归属校验：登记必须属于路径上的端点，否则 404。
+      operationId: deleteModelRevision
+      parameters:
+        - name: endpoint_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: model_revision_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204": { description: 已删除 }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/admin/role-bindings/{id}:
+    delete:
+      tags: [Admin]
+      summary: 解除角色绑定
+      operationId: adminUnbindRole
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: 已解除 }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/admin/users:
+    get:
+      tags: [Admin]
+      summary: 查询用户列表（cursor 分页，默认 10 条/页）
+      operationId: adminListUsers
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          required: false
+          description: 状态筛选（ACTIVE/DISABLED）
+          schema: { type: string }
+        - name: q
+          in: query
+          required: false
+          description: 关键字检索（登录名 / 显示名 / 邮箱）
+          schema: { type: string }
+      responses:
+        "200": { description: 用户列表 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Admin]
+      summary: 创建用户（含组织分配 + 密码）
+      operationId: adminCreateUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login_name, display_name, password, org_code]
+              properties:
+                login_name:      { type: string }
+                display_name:    { type: string }
+                email:           { type: string, format: email }
+                password:        { type: string, minLength: 6 }
+                org_code:        { type: string }
+                membership_type: { type: string, default: EMPLOYEE }
+      responses:
+        "201": { description: 已创建 }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/admin/users/{id}:
+    get:
+      tags: [Admin]
+      summary: 查询用户详情（含 memberships）
+      operationId: adminGetUser
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200": { description: 用户详情 }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Admin]
+      summary: 更新用户基本信息（display_name / email）
+      operationId: adminUpdateUser
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                display_name: { type: string }
+                email:        { type: string }
+      responses:
+        "200": { description: 已更新 }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Admin]
+      summary: 停用用户（status=DISABLED + subject_version++ 触发撤销传播）
+      operationId: adminDeleteUser
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "204": { description: 已停用 }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/admin/ontology-categories:
+    get:
+      tags: [Admin]
+      summary: 查询本体分类列表（含父子层级、引用计数）
+      operationId: adminListOntologyCategories
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: 分类列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OntologyCategory"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Admin]
+      summary: 创建本体分类（根分类 parent_id 留空）
+      operationId: adminCreateOntologyCategory
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category_code, name]
+              properties:
+                parent_id:    { type: string, description: "父分类 UUID，留空=根分类" }
+                category_code:{ type: string, description: "租户内业务唯一编码" }
+                name:         { type: string }
+                description:  { type: string }
+                sort_order:   { type: integer, default: 0 }
+      responses:
+        "201": { description: 已创建 }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/admin/ontology-categories/{id}:
+    patch:
+      tags: [Admin]
+      summary: 更新本体分类（白名单：name/description/sort_order/status）
+      operationId: adminUpdateOntologyCategory
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:        { type: string }
+                description: { type: string }
+                sort_order:  { type: integer }
+                status:      { type: string, enum: [ACTIVE, INACTIVE] }
+      responses:
+        "204": { description: 已更新 }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Admin]
+      summary: 删除本体分类。有本体引用或有子分类时返回 409 CONFLICT
+      operationId: adminDeleteOntologyCategory
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: 已删除 }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: 分类下仍有本体或子分类，请先处理关联或改用停用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/admin/organizations:
+    get:
+      tags: [Admin]
+      summary: 查询组织列表（租户内全部，含父子关系）
+      operationId: adminListOrgs
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: q
+          in: query
+          required: false
+          description: 关键字检索（组织编码 / 名称）
+          schema: { type: string }
+      responses:
+        "200": { description: 组织列表 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Admin]
+      summary: 创建组织（可指定 parent_id 挂到树中）
+      operationId: adminCreateOrg
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_code, name]
+              properties:
+                org_code:  { type: string }
+                name:      { type: string }
+                org_type:  { type: string, default: DEPARTMENT }
+                parent_id: { type: string }
+      responses:
+        "201": { description: 已创建 }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/admin/organizations/{id}:
+    patch:
+      tags: [Admin]
+      summary: 更新组织（code 不可变）
+      operationId: adminUpdateOrg
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:     { type: string }
+                org_type: { type: string }
+      responses:
+        "200": { description: 已更新 }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Admin]
+      summary: 停用组织（软删除 status=INACTIVE）
+      operationId: adminDeleteOrg
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "204": { description: 已停用 }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/admin/connectors:
+    get:
+      tags: [BFF]
+      summary: 已启用连接器（cursor 分页 + 关键字筛选，默认 10 行/页）
+      operationId: adminConnectors
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: q
+          in: query
+          required: false
+          description: 关键字检索（plugin_key / name）
+          schema: { type: string }
+      responses:
+        "200":
+          description: 连接器列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Connector" }
+                  next_cursor: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/ops/alerts:
+    get:
+      tags: [BFF]
+      summary: 运维告警视图（死信/失败运行/未知外部操作）
+      operationId: opsAlerts
+      responses:
+        "200":
+          description: 告警视图
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OpsAlerts" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/releases:
+    get:
+      tags: [BFF]
+      summary: 质量门禁决策（发布治理视图；cursor 分页 + 关键字筛选，默认 10 行/页）
+      operationId: listReleases
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: q
+          in: query
+          required: false
+          description: 关键字检索（decision / policy_revision）
+          schema: { type: string }
+      responses:
+        "200":
+          description: 发布决策列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ReleaseDecision" }
+                  next_cursor: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        平台会话令牌，格式 `v1.<tenant_uuid>.<session_uuid>.<subject_version>`。
+        会话经 identity.SessionService 校验（撤销传播 + 租户 ACTIVE）。
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: odap_session
+      description: 平台会话 Cookie（值同 bearerAuth 令牌）。
+    devHeaders:
+      type: apiKey
+      in: header
+      name: X-Odap-Dev-Tenant
+      description: |
+        仅开发环境（APP_ENV=development）可用：配合 X-Odap-Dev-Subject /
+        X-Odap-Dev-Scopes 直接注入调试身份。生产环境禁用。
+
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: 单页大小（1..200，默认按资源）
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: 不透明 keyset 游标（来自上一页 next_cursor）
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: 写操作幂等键（第七篇 §8.1）；回写于响应头便于核对
+      schema: { type: string, maxLength: 200 }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: 乐观并发前置条件；不匹配返回 409 CONFLICT（details.current_version）
+      schema: { type: string }
+    IdPath:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    InvIdPath:
+      name: inv_id
+      in: path
+      required: true
+      description: 工具调用记录 ID（runtime.tool_invocations.id）
+      schema: { type: string, format: uuid }
+    RunIdPath:
+      name: id
+      in: path
+      required: true
+      description: Run ID
+      schema: { type: string, format: uuid }
+
+  responses:
+    BadRequest:
+      description: 参数或请求体不合法
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Unauthorized:
+      description: 身份缺失或失效
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Forbidden:
+      description: 授权拒绝或范围越界
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    NotFound:
+      description: 资源不存在或不在可见范围
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Conflict:
+      description: 状态/版本/幂等冲突
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    ValidationFailed:
+      description: 业务或语义校验失败
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    RateLimited:
+      description: 限流（尊重 Retry-After）
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Unavailable:
+      description: 依赖不可用或能力未接入（响应体说明原因，绝不假成功）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Internal:
+      description: 平台内部错误（已脱敏）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  schemas:
+    Error:
+      type: object
+      required: [code, base_code, message, retryable]
+      properties:
+        code:
+          type: string
+          description: 域码（稳定、具体）
+        base_code:
+          type: string
+          enum:
+            - INVALID_ARGUMENT
+            - UNAUTHENTICATED
+            - PERMISSION_DENIED
+            - NOT_FOUND
+            - CONFLICT
+            - VALIDATION_FAILED
+            - RATE_LIMITED
+            - UNAVAILABLE
+            - RESOURCE_EXHAUSTED
+            - DEADLINE_EXCEEDED
+            - EXECUTION_UNKNOWN
+            - INTERNAL
+        message:
+          type: string
+          description: 脱敏后的可读信息
+        retryable:
+          type: boolean
+        details:
+          type: object
+          additionalProperties: true
+
+    ErrorResponse:
+      type: object
+      required: [error, request_id]
+      properties:
+        error: { $ref: "#/components/schemas/Error" }
+        request_id: { type: string }
+
+    SessionResponse:
+      type: object
+      description: 注册/登录成功后返回的会话凭据（internal/api/handlers/auth_handlers.go SessionResponse）
+      required: [session_token, expires_at, refresh_expires_at]
+      properties:
+        session_token:
+          type: string
+          description: 会话令牌，格式 `v1.<tenant_uuid>.<session_uuid>.<subject_version>`
+        refresh_token:
+          type: string
+          description: 刷新令牌（仅在需要轮换时返回；不回显到审计）
+        expires_at: { type: string, format: date-time }
+        refresh_expires_at: { type: string, format: date-time }
+
+    OntologyCategory:
+      type: object
+      description: 本体分类（ontology.categories，迁移 000021）
+      required: [id, category_code, name, status]
+      properties:
+        id: { type: string, format: uuid }
+        parent_id:
+          type: string
+          description: 父分类 ID；根分类为空串（DDL 允许 NULL，接口统一归一为空串）
+        category_code: { type: string }
+        name: { type: string }
+        description: { type: string }
+        sort_order: { type: integer }
+        status: { type: string, enum: [ACTIVE, INACTIVE] }
+        ontology_count:
+          type: integer
+          description: 该分类下本体的引用计数
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    RunStatus:
+      type: string
+      description: Run 状态（contracts/01 §1，17 态，权威）
+      enum:
+        - CREATED
+        - CONTEXT_BUILDING
+        - READY
+        - PLANNING
+        - PLAN_VALIDATING
+        - RUNNING
+        - WAITING_INPUT
+        - WAITING_APPROVAL
+        - PAUSED
+        - RECOVERING
+        - CANCELLING
+        - REQUIRES_RECONCILIATION
+        - MANUAL_REVIEW
+        - COMPLETED
+        - FAILED
+        - CANCELLED
+        - EXPIRED
+
+    Run:
+      type: object
+      description: |
+        Run 的对外视图。两种驱动方式二选一：本体驱动（ontology_version 有值，
+        执行规则来自本体）或 Agent 驱动（agent_version_id 有值）。
+      required: [id, objective, status, subject_id, progress, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        objective:
+          type: string
+          description: 业务目标（本体驱动时为用户提交的自然语言目标；Agent 驱动时为空串）
+        status: { $ref: "#/components/schemas/RunStatus" }
+        subject_id: { type: string, format: uuid, description: 请求主体（requested_by） }
+        agent_version_id: { type: string, format: uuid, nullable: true }
+        ontology_version:
+          type: string
+          nullable: true
+          description: 执行时锁定的本体版本号（人可读，如 1.0.0）；仅本体驱动时给出
+        business_type: { type: string, nullable: true }
+        progress: { type: number, minimum: 0, maximum: 100 }
+        plan:
+          type: object
+          additionalProperties: true
+          description: 本体审查生成的结构化执行计划（source=ontology）
+        review_conclusion:
+          type: object
+          additionalProperties: true
+          description: |
+            本体审查结论：decision / reasons / conforms / rule_checks /
+            shape_findings / graph_iri / ontology / facts。
+            decision 由服务端合成，SHACL 判定的不合规**不可**被模型判断覆盖。
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    RunList:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Run" } }
+        next_cursor: { type: string }
+
+    PlanTemplateState:
+      type: string
+      description: |
+        模板生命周期。由最新修订的 validation_status 归一而来
+        （VALID→VALIDATED、INVALID→REJECTED、其余→DRAFT）。
+      enum: [DRAFT, VALIDATED, REJECTED]
+
+    PlanTemplate:
+      type: object
+      description: |
+        工作流模板资产（planning.plans.status = 'TEMPLATE' 的行 + 其最新修订）。
+        业务定义（name / ontology_ref / 步骤）存放在 plan_ir JSONB，出自数据文件
+        datasets/finance-demo/plans.json，不额外落库为列。
+      required: [id, name, domain, version, state, node_kinds, revision_id, updated_at]
+      properties:
+        id: { type: string, format: uuid, description: 即 plan_id }
+        name: { type: string }
+        domain: { type: string }
+        version: { type: integer, description: 最新修订号（模板的不可变版本） }
+        state: { $ref: "#/components/schemas/PlanTemplateState" }
+        node_kinds:
+          type: array
+          description: 由 plan_ir.steps[].kind 展开（第十七篇 §7.3 节点词表）
+          items: { type: string }
+        ontology_ref:
+          type: string
+          nullable: true
+          description: 模板锁定的本体键
+        revision_id: { type: string, format: uuid, description: 最新修订 ID }
+        updated_at: { type: string, format: date-time }
+
+    PlanTemplateList:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/PlanTemplate" } }
+        next_cursor: { type: string }
+
+    RunStep:
+      type: object
+      required: [id, run_id, seq, name, kind, status]
+      properties:
+        id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        seq: { type: integer, description: 步骤序号（runtime.run_steps.step_no） }
+        name: { type: string, description: 步骤名称（人可读，由服务端给出） }
+        kind: { type: string, description: 步骤类型（runtime.run_steps.step_type） }
+        status:
+          type: string
+          description: Step 状态（contracts/01 §2）
+          enum: [PENDING, READY, RUNNING, RETRY_WAIT, WAITING_INPUT, WAITING_APPROVAL, SUCCEEDED, FAILED, SKIPPED, CANCELLED, UNKNOWN, RECONCILING]
+        rationale: { type: string, nullable: true, description: 该步骤的判断依据 }
+        ontology_version: { type: string, nullable: true, description: 该步骤所用本体版本 }
+        rule_refs:
+          type: array
+          description: 命中的形状/规则引用
+          items: { type: string }
+        fact_refs:
+          type: array
+          description: 涉及的业务事实引用（类/实例 id）
+          items: { type: string }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+        error_code: { type: string, nullable: true }
+        error_message: { type: string, nullable: true }
+        result_payload: { type: object, additionalProperties: true }
+
+    RunStepList:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/RunStep" } }
+        next_cursor: { type: string }
+
+    RunDependency:
+      type: object
+      required: [dep_type, dep_id, dep_version, dep_digest]
+      properties:
+        dep_type:
+          type: string
+          enum: [AGENT_VERSION, ONTOLOGY_VERSION, TOOL_VERSION, POLICY_VERSION, MODEL_CONFIG, ERP_CONNECTION, ERP_MAPPING_VERSION, PLAN_TEMPLATE]
+        dep_id: { type: string }
+        dep_version: { type: string }
+        dep_digest: { type: string }
+
+    CreateRunRequest:
+      type: object
+      description: |
+        两种驱动方式二选一：携带 ontology_id 时走**本体驱动审查**
+        （服务端按该本体规则审查业务目标并在本次请求内给出结论，agent_version_id
+        不需要）；只带 agent_version_id 时走既有 Agent 驱动路径。
+      properties:
+        ontology_id:
+          type: string
+          format: uuid
+          description: 本体驱动审查所依据的本体 id（与 agent_version_id 二选一）
+        objective:
+          type: string
+          description: 业务目标（自然语言），本体驱动时必填
+        business_type: { type: string, description: 业务类型标注（可选） }
+        agent_version_id: { type: string, format: uuid }
+        input: { type: object, additionalProperties: true }
+        priority: { type: integer, minimum: 0, maximum: 1000, default: 100 }
+        max_attempts: { type: integer, minimum: 1, maximum: 10, default: 3 }
+        deadline_at: { type: string, format: date-time }
+
+    RenewLeaseRequest:
+      type: object
+      required: [owner]
+      properties:
+        owner: { type: string }
+        lease_epoch: { type: integer, format: int64 }
+
+    CreatedResource:
+      type: object
+      description: 通用创建响应（至少含 id）
+      required: [id]
+      properties:
+        id: { type: string, format: uuid }
+        agent_key: { type: string }
+        ontology_key: { type: string }
+        plugin_key: { type: string }
+        tool_key: { type: string }
+        policy_key: { type: string }
+        version_id: { type: string, format: uuid }
+        version: { type: string }
+        status: { type: string }
+
+    Agent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        agent_key: { type: string }
+        domain: { type: string }
+        description: { type: string }
+        status: { type: string }
+        # 内置智能体（平台自身能力，如 AI 自动生成 / 本体校验 等）为 true；
+        # 内置项不可修改（PATCH/DELETE/publish 一律 409），仅用户自建 Agent 可改。
+        is_builtin: { type: boolean }
+        latest_version_id: { type: string, format: uuid, nullable: true }
+        latest_version: { type: string, nullable: true }
+        latest_version_status: { type: string, nullable: true }
+
+    CreateAgentRequest:
+      type: object
+      required: [agent_key, domain, input_schema, output_schema]
+      properties:
+        agent_key: { type: string }
+        domain: { type: string }
+        description: { type: string }
+        version: { type: string }
+        input_schema: { type: object, additionalProperties: true }
+        output_schema: { type: object, additionalProperties: true }
+
+    Ontology:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        ontology_key: { type: string }
+        name: { type: string }
+        domain: { type: string }
+        granularity: { type: string }
+        description: { type: string }
+        status: { type: string }
+        latest_version_id: { type: string, format: uuid, nullable: true }
+        latest_version: { type: string, nullable: true }
+        latest_version_status: { type: string, nullable: true }
+
+    OntologyDetail:
+      description: |
+        `GET /api/v1/ontologies/{id}` 的响应：列表字段 + 由最新版本 manifest
+        **派生**的「类与关系」+ 最近一次校验的发现项与结论。
+      allOf:
+        - $ref: "#/components/schemas/Ontology"
+        - type: object
+          required: [classes, findings]
+          properties:
+            classes:
+              type: array
+              description: 由 manifest 投影出的类与关系，随详情一起返回（页面不再自行解析清单）。
+              items: { $ref: "#/components/schemas/OntologyClass" }
+            findings:
+              type: array
+              description: 最近一次校验的发现项；无违规时为空数组，**恒为数组**。
+              items: { $ref: "#/components/schemas/ShaclFinding" }
+            validation:
+              type: object
+              nullable: true
+              description: 最近一次校验结论；从未校验时为 null。
+              additionalProperties: true
+            manifest:
+              type: object
+              description: 最新版本的原始清单（留痕用；页面展示的「类与关系」是它的投影，不是它本身）。
+              additionalProperties: true
+
+    OntologyClass:
+      type: object
+      description: 由 manifest 投影出的一个业务类及其关系。
+      required: [iri, label, relations]
+      properties:
+        iri: { type: string }
+        label: { type: string, description: 清单未写 label 时回落到类名 }
+        description: { type: string }
+        relations:
+          type: array
+          description: 仅列出以本类为起点的关系（manifest 里关系是全局声明，按 from_class 归属到各类）。
+          items:
+            type: object
+            required: [predicate, target, label]
+            properties:
+              predicate: { type: string, description: 关系谓词的 IRI }
+              target: { type: string, description: 目标类的 IRI }
+              label: { type: string, description: 清单未写说明时回落到关系名 }
+
+    CreateOntologyRequest:
+      type: object
+      required: [ontology_key, name, domain, granularity, manifest]
+      properties:
+        ontology_key: { type: string }
+        name: { type: string }
+        domain: { type: string }
+        granularity: { type: string }
+        description: { type: string }
+        version: { type: string }
+        manifest: { type: object, additionalProperties: true }
+
+    OntologyArtifacts:
+      type: object
+      description: |
+        `GET /api/v1/ontologies/{id}/artifacts` 的响应：本体最新版本的三份产物文本，
+        以及供界面画图的结构化节点/边。
+        对应用户可见影响：抽屉中「知识图谱」页签画出的两张图（`graph.ontology` /
+        `graph.shapes`），「RDF / OWL / SHACL」页签展示的原文（`rdf` / `owl` / `shacl`），
+        `counts` 是页脚展示的规模信息。
+      required: [ontology_id, ontology_key, version_id, version, graph_iri, rdf, owl, shacl, graph, counts]
+      properties:
+        ontology_id: { type: string, format: uuid }
+        ontology_key: { type: string }
+        version_id: { type: string, format: uuid }
+        version: { type: string }
+        graph_iri:
+          type: string
+          description: 由 (ontology_key, version_id) 确定性派生的数据命名图 IRI。
+        rdf: { $ref: "#/components/schemas/OntologyArtifactText" }
+        owl: { $ref: "#/components/schemas/OntologyArtifactText" }
+        shacl: { $ref: "#/components/schemas/OntologyArtifactText" }
+        graph:
+          type: object
+          description: |
+            与上述三份文本同源（同一份 manifest 投影）的图结构，供界面画图。
+            每个节点/边的 ID 都是词项 IRI，可在源码页签里逐条找到对应语句。
+          required: [ontology, ontology_tbox_only, shapes]
+          properties:
+            ontology:
+              $ref: "#/components/schemas/OntologyGraph"
+              description: 本体结构图，含实例（ABox）。
+            ontology_tbox_only:
+              $ref: "#/components/schemas/OntologyGraph"
+              description: |
+                本体结构图，只含类与类之间的关系。两份都返回是刻意的：界面上的
+                「显示实例」开关只需在两者间切换，不需要再发一次请求，也避免
+                前端自己过滤导致"图上该有什么"出现第二份定义。
+            shapes:
+              $ref: "#/components/schemas/OntologyGraph"
+              description: 形状约束图：形状 →「目标类 / 约束项」。
+        counts:
+          type: object
+          description: 规模信息，全部取自 manifest（本端点不读图存储，故不含运行时实例计数）。
+          required: [tbox_triples, abox_triples, shapes, target_classes, instances]
+          properties:
+            tbox_triples: { type: integer }
+            abox_triples: { type: integer }
+            shapes: { type: integer }
+            target_classes: { type: integer }
+            instances: { type: integer }
+
+    OntologyGraph:
+      type: object
+      description: 一张自包含的图：节点与边。边两端的 ID 必然出现在 nodes 里。
+      required: [nodes, edges]
+      properties:
+        nodes:
+          type: array
+          items: { $ref: "#/components/schemas/OntologyGraphNode" }
+        edges:
+          type: array
+          items: { $ref: "#/components/schemas/OntologyGraphEdge" }
+
+    OntologyGraphNode:
+      type: object
+      description: 图上的一个节点；ID 为词项 IRI，与源码页签里的写法一致。
+      required: [id, kind, label]
+      properties:
+        id: { type: string }
+        kind:
+          type: string
+          enum: [class, instance, shape, constraint]
+          description: |
+            class=本体里的类；instance=样例实例；shape=SHACL 形状；
+            constraint=形状下的属性形状（约束项）。
+        label:
+          type: string
+          description: 节点标题：优先中文标签，缺失时回落词项局部名。
+        subtitle:
+          type: string
+          description: 词项局部名（与源码写法一致）；与 label 相同时省略。
+        details:
+          type: array
+          description: 节点内的要点行（类的属性、实例的属性取值、约束项…），顺序稳定。
+          items: { type: string }
+
+    OntologyGraphEdge:
+      type: object
+      description: 图上的一条边。
+      required: [from, to, kind, label]
+      properties:
+        from: { type: string }
+        to: { type: string }
+        kind:
+          type: string
+          enum: [relation, type, target, property]
+          description: |
+            relation=对象属性；type=实例到其类（rdf:type）；
+            target=形状到目标类（sh:targetClass）；property=形状到约束项（sh:property）。
+        label:
+          type: string
+          description: 边上的谓词简称，如 `claimType` / `sh:targetClass`。
+
+    OntologyArtifactText:
+      type: object
+      description: 一份产物文本及其媒体类型。
+      required: [format, content]
+      properties:
+        format:
+          type: string
+          description: 媒体类型；Turtle 为 text/turtle，OWL 为 application/rdf+xml。
+        content: { type: string }
+
+    OntologyValidationReport:
+      type: object
+      description: |
+        `POST /api/v1/ontologies/{id}/validate` 的同步响应。
+        对应用户可见影响：`version_status` 决定「发布」按钮是否可用，
+        `findings[].blocking` 决定阻断项计数。
+      required: [ontology_id, version_id, version_status, conforms, run_status, findings]
+      properties:
+        ontology_id: { type: string, format: uuid }
+        version_id: { type: string, format: uuid }
+        version: { type: string }
+        version_status:
+          type: string
+          enum: [DRAFT, VALIDATING, VALID, REJECTED]
+          description: 本体版本在状态机中的新位置；只有 VALID/APPROVED 才可发布。
+        conforms:
+          type: boolean
+          description: SHACL 结论。false 时 findings 中必有至少一条 blocking=true。
+        validation_run_id: { type: string, format: uuid }
+        run_status:
+          type: string
+          enum: [PASSED, FAILED]
+          description: ontology.validation_runs.status —— 本次校验运行的结论。
+        validator_version: { type: string }
+        findings:
+          type: array
+          description: 恒为数组（无违规时为空数组，不省略该字段）。
+          items: { $ref: "#/components/schemas/ShaclFinding" }
+        graph:
+          type: object
+          description: 本次校验的数据面证据（用于人工核对"到底查了多少数据"）。
+          properties:
+            graph_iri: { type: string }
+            target_classes: { type: array, items: { type: string } }
+            focus_nodes: { type: integer, description: 命中目标类的实例数；为 0 时端点返回 422。 }
+            tbox_triples: { type: integer }
+            abox_triples: { type: integer }
+        checks:
+          type: object
+          description: 各检查项的结论；null 表示该项**未执行**。
+          properties:
+            syntax_valid: { type: boolean }
+            shacl_conformant: { type: boolean }
+            owl_consistent: { type: boolean, nullable: true }
+            business_rules_valid: { type: boolean, nullable: true }
+
+    ShaclFinding:
+      type: object
+      description: 一条校验发现项（ontology.validation_findings 的对外投影）。
+      required: [id, severity, message, blocking]
+      properties:
+        id: { type: string, format: uuid }
+        severity:
+          type: string
+          enum: [info, warning, violation]
+          description: |
+            由库内 INFO/WARNING/ERROR/CRITICAL 映射而来；任何未登记取值一律
+            映射为 violation（fail-closed），避免未知级别被当作不阻断。
+        level: { type: string, description: 中文级别标签（提示/警告/违规）。 }
+        message: { type: string }
+        code:
+          type: string
+          description: 稳定的机器可读代码（SHACL 组件名，如 MinCount / Pattern / Datatype）。
+        focus_node: { type: string, description: 违规实例的 IRI；针对整个类的约束时省略该字段。 }
+        path: { type: string, description: 违规属性的谓词 IRI；无具体路径时省略该字段。 }
+        blocking: { type: boolean, description: severity=violation 时为 true，即阻断发布。 }
+        finding_digest:
+          type: string
+          description: |
+            发现项的跨轮次稳定身份（SHA-256 hex）。id 是随机 UUID、validation_run_id
+            每轮都变，唯有该摘要在轮次之间保持稳定，因此"上轮 3 条违规、本轮剩 2 条"这类
+            回归对比只能依赖它。元组为 shape_id‖focus_node‖path‖component‖severity，
+            不含 message（改措辞不等于问题变了）。迁移前写入的旧行无形状身份、无法复算，
+            摘要为空，此时省略该字段。
+
+    Plugin:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        plugin_key: { type: string }
+        plugin_kind: { type: string, enum: [AGENT, ONTOLOGY, TOOL, POLICY, MODEL_PROVIDER] }
+        name: { type: string }
+        description: { type: string }
+        status: { type: string }
+        is_platform: { type: boolean }
+        installation_state: { type: string, nullable: true }
+
+    CreatePluginRequest:
+      type: object
+      required: [plugin_key, plugin_kind, name, manifest]
+      properties:
+        plugin_key: { type: string }
+        plugin_kind: { type: string, enum: [AGENT, ONTOLOGY, TOOL, POLICY, MODEL_PROVIDER] }
+        name: { type: string }
+        description: { type: string }
+        version: { type: string }
+        manifest: { type: object, additionalProperties: true }
+
+    Tool:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tool_key: { type: string }
+        description: { type: string }
+        status: { type: string }
+        is_builtin: { type: boolean }
+        latest_version_id: { type: string, format: uuid, nullable: true }
+        latest_version: { type: string, nullable: true }
+        latest_version_status: { type: string, nullable: true }
+        effect_class: { type: string, enum: [READ, EXTERNAL_WRITE, INTERNAL_WRITE], nullable: true }
+
+    Workflow:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        workflow_key: { type: string }
+        name: { type: string }
+        description: { type: string }
+        status: { type: string, enum: [ACTIVE, DISABLED, DELETED] }
+        is_builtin: { type: boolean }
+        latest_version_id: { type: string, format: uuid, nullable: true }
+        latest_version: { type: string, nullable: true }
+        latest_version_status: { type: string, nullable: true }
+        definition: { type: object, additionalProperties: true, nullable: true }
+
+    CreateToolRequest:
+      type: object
+      required: [tool_key, input_schema, output_schema]
+      properties:
+        tool_key: { type: string }
+        description: { type: string }
+        version: { type: string }
+        input_schema: { type: object, additionalProperties: true }
+        output_schema: { type: object, additionalProperties: true }
+        capabilities: { type: array, items: { type: string } }
+        effect_class: { type: string, enum: [READ, EXTERNAL_WRITE, INTERNAL_WRITE] }
+
+    PolicyVersion:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        policy_key: { type: string }
+        version: { type: string }
+        status: { type: string, enum: [DRAFT, VALIDATING, PUBLISHED, DISABLED, RETIRED] }
+        policy_language: { type: string, enum: [JSON_DSL_V1, OPA_REGO_V1] }
+        content_digest: { type: string }
+        created_at: { type: string, format: date-time }
+        published_at: { type: string, format: date-time, nullable: true }
+
+    CreatePolicyRequest:
+      type: object
+      required: [policy_key, version, policy_document]
+      properties:
+        policy_key: { type: string }
+        version: { type: string }
+        policy_language: { type: string, enum: [JSON_DSL_V1, OPA_REGO_V1] }
+        policy_document: { type: object, additionalProperties: true }
+
+    Approval:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid, nullable: true }
+        approval_type: { type: string }
+        status: { type: string, enum: [PENDING, APPROVED, REJECTED, CANCELLED, EXPIRED, INVALIDATED] }
+        subject: { type: string }
+        payload_digest: { type: string }
+        policy_version_refs: { type: array, items: { type: string } }
+        expires_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        decided_at: { type: string, format: date-time, nullable: true }
+        actions:
+          type: array
+          items: { $ref: "#/components/schemas/ApprovalAction" }
+
+    ApprovalAction:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        actor_id: { type: string, format: uuid }
+        decision: { type: string, enum: [APPROVE, REJECT] }
+        comment: { type: string }
+        payload_digest: { type: string }
+        created_at: { type: string, format: date-time }
+
+    ERPCapabilities:
+      type: object
+      properties:
+        connection_id: { type: string }
+        adapter_id: { type: string }
+        adapter_version: { type: string }
+        objects: { type: array, items: { type: string } }
+        operations: { type: array, items: { type: string } }
+        idempotency_level: { type: string, enum: [L1, L2, L3] }
+        supports_version_check: { type: boolean }
+        supports_query: { type: string, enum: [none, by_operation_id, by_idempotency_key, full] }
+        supports_operation_lookup: { type: boolean }
+        supports_receipt_verification: { type: boolean }
+        supports_remote_approval: { type: boolean }
+
+    ToolInvocation:
+      type: object
+      description: 工具调用记录（runtime.tool_invocations）——真实执行结果或真实错误，
+        EXTERNAL_WRITE 须经审批确认后才执行。
+      properties:
+        id: { type: string, format: uuid }
+        tool_id: { type: string, format: uuid }
+        tool_key: { type: string }
+        effect_class: { type: string, enum: [READ, INTERNAL_WRITE, EXTERNAL_WRITE] }
+        status:
+          type: string
+          enum: [PENDING_APPROVAL, APPROVED, EXECUTING, SUCCEEDED, FAILED, REJECTED]
+        adapter: { type: string }
+        operation: { type: string }
+        input_payload: { type: object, nullable: true }
+        output_payload: { type: object, nullable: true }
+        error_message: { type: string, nullable: true }
+        requested_by: { type: string }
+        decided_by: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        decided_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+
+    ErpSystem:
+      type: object
+      description: ERP 系统类型字典（integration.erp_systems，全局只读）。
+      properties:
+        system_code: { type: string }
+        display_name: { type: string }
+        adapter_key: { type: string }
+        implemented: { type: boolean }
+        is_default: { type: boolean }
+        sort_no: { type: integer }
+        description: { type: string }
+
+    ErpConnectionInput:
+      type: object
+      required: [system_code, name, base_url]
+      properties:
+        system_code: { type: string }
+        name: { type: string }
+        base_url: { type: string }
+        credential_ref: { type: string }
+        credential:
+          type: object
+          nullable: true
+          additionalProperties: { type: string }
+        status: { type: string, enum: [ACTIVE, DISABLED, DELETED] }
+
+    ErpConnection:
+      type: object
+      description: 租户级 ERP 连接（integration.erp_connections）。凭据仅回打码值。
+      properties:
+        id: { type: string, format: uuid }
+        system_code: { type: string }
+        system_name: { type: string }
+        name: { type: string }
+        base_url: { type: string }
+        credential_ref: { type: string, nullable: true }
+        credential_masked: { type: string }
+        credential_source: { type: string, enum: [CIPHERTEXT, ENV_REF, NONE] }
+        has_credential: { type: boolean }
+        status: { type: string, enum: [ACTIVE, DISABLED, DELETED] }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ERPOperation:
+      type: object
+      description: ERP 操作账本（integration.erp_operations）。
+      properties:
+        id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid, nullable: true }
+        connection_id: { type: string, nullable: true }
+        object_type: { type: string }
+        operation: { type: string }
+        idempotency_key: { type: string, nullable: true }
+        status: { type: string }
+        request_payload: { type: object, nullable: true }
+        response_payload: { type: object, nullable: true }
+        error_message: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    AuditEvent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        event_type: { type: string }
+        actor_type: { type: string }
+        actor_id: { type: string, nullable: true }
+        resource_type: { type: string }
+        resource_id: { type: string }
+        action: { type: string }
+        outcome: { type: string }
+        request_id: { type: string, nullable: true }
+        run_id: { type: string, format: uuid, nullable: true }
+        occurred_at: { type: string, format: date-time }
+        segment_id: { type: string }
+        seq_no: { type: integer, format: int64 }
+
+    EvaluationRun:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        subject_type: { type: string }
+        subject_id: { type: string }
+        subject_revision: { type: string }
+        dataset_revision_id: { type: string, format: uuid }
+        suite_revision: { type: string }
+        environment_digest: { type: string }
+        status: { type: string }
+        started_at: { type: string, format: date-time, nullable: true }
+        completed_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        metrics:
+          type: array
+          items: { $ref: "#/components/schemas/MetricResult" }
+
+    MetricResult:
+      type: object
+      properties:
+        metric_key: { type: string }
+        metric_value: { type: number, nullable: true }
+        sample_count: { type: integer, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    CreateEvaluationRequest:
+      type: object
+      required: [subject_type, subject_id, subject_revision, dataset_revision_id, suite_revision, environment_digest]
+      properties:
+        subject_type: { type: string }
+        subject_id: { type: string }
+        subject_revision: { type: string }
+        dataset_revision_id: { type: string, format: uuid }
+        suite_revision: { type: string }
+        environment_digest: { type: string }
+
+    Task:
+      type: object
+      required: [id, kind, state, status, progress, status_url, href]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [RUN] }
+        state: { type: string, enum: [QUEUED, RUNNING, SUCCEEDED, FAILED, CANCELLED] }
+        status: { $ref: "#/components/schemas/RunStatus" }
+        progress: { type: number, minimum: 0, maximum: 1 }
+        error_code: { type: string, nullable: true }
+        created_at: { type: string }
+        updated_at: { type: string }
+        status_url: { type: string }
+        href: { type: string }
+
+    WorkspaceSummary:
+      type: object
+      required: [runs_by_status, runs_total, terminal_runs, pending_approvals, reconciliation_pending, unknown_external_operations]
+      properties:
+        runs_by_status:
+          type: object
+          additionalProperties: { type: integer }
+        runs_total: { type: integer }
+        terminal_runs: { type: integer }
+        pending_approvals: { type: integer }
+        reconciliation_pending: { type: integer }
+        unknown_external_operations: { type: integer }
+        generated_at: { type: string, format: date-time }
+
+    App:
+      type: object
+      description: 业务应用视图（口径 = 企业本体：业务对象 + 规则）
+      properties:
+        id: { type: string, format: uuid }
+        ontology_key: { type: string }
+        name: { type: string }
+        domain: { type: string }
+        description: { type: string }
+        status: { type: string }
+        latest_version: { type: string, nullable: true }
+        latest_version_status: { type: string, nullable: true }
+
+    AdminOverview:
+      description: |
+        管理控制台首页聚合（第十七篇 §5.3 四层结构）。
+        每个数字都必须能说明统计范围与数据来源，故 detail/口径由服务端一并给出。
+      type: object
+      required: [counts, system_health, business, semantic, governance]
+      properties:
+        counts:
+          type: object
+          properties:
+            roles: { type: integer }
+            role_bindings: { type: integer }
+            policy_versions: { type: integer }
+            agents: { type: integer }
+            tools: { type: integer }
+            ontologies: { type: integer }
+            active_installations: { type: integer }
+            evaluation_runs: { type: integer }
+            audit_events: { type: integer }
+        platform_users: { type: integer }
+        generated_at: { type: string, format: date-time }
+        system_health:
+          type: array
+          items:
+            type: object
+            required: [component, state]
+            properties:
+              component: { type: string }
+              state: { type: string, enum: [healthy, degraded, down] }
+              detail: { type: string }
+        business:
+          type: object
+          properties:
+            total_runs: { type: integer }
+            success_rate:
+              type: number
+              format: float
+              description: COMPLETED / 终态 Run；无终态 Run 时为 0
+            failures: { type: integer }
+            pending_approvals: { type: integer }
+            pending_reconciliations: { type: integer }
+        semantic:
+          type: object
+          properties:
+            ontology_validation_failures: { type: integer }
+            mapping_issues:
+              type: integer
+              nullable: true
+              description: |
+                已持久化的映射问题数。数据映射（/api/v1/data-sources）尚未接入平台时
+                为 null（前端渲染「未接入」）——绝不返回 0，否则会把「功能未接入」误读为「没有问题」。
+            data_freshness:
+              type: string
+              description: 最近一条审计事件的 occurrence 时间（RFC3339）；无数据时为"无数据"
+            semantic_regressions: { type: integer }
+        governance:
+          type: object
+          properties:
+            recent_policy_changes: { type: integer, description: 最近 30 天创建的策略版本数 }
+            failed_gates: { type: integer, description: decision ∈ {FAILED,REJECTED,BLOCKED} }
+            open_security_alerts: { type: integer, description: 最近 24 小时 outcome ∈ {DENIED,REJECTED} 的审计事件数 }
+            pending_releases: { type: integer, description: decision = PENDING 的门禁决策数 }
+
+    RoleList:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Role" } }
+        next_cursor: { type: string }
+
+    Role:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        role_key: { type: string }
+        name: { type: string }
+        description: { type: string }
+        is_system_role: { type: boolean }
+        created_at: { type: string, format: date-time }
+
+    RoleBindingList:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/RoleBinding" } }
+        next_cursor: { type: string }
+
+    RoleBinding:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        role_key: { type: string }
+        role_name: { type: string }
+        scope_type: { type: string, enum: [TENANT, ORG, ORG_SUBTREE, SELF, ASSIGNED, EXPLICIT] }
+        scope_org_id: { type: string, format: uuid, nullable: true }
+        login_name: { type: string }
+        display_name: { type: string }
+        valid_from: { type: string, format: date-time }
+        valid_until: { type: string, format: date-time, nullable: true }
+
+    ModelProviders:
+      type: object
+      required: [providers, endpoints]
+      properties:
+        providers: { type: array, items: { $ref: "#/components/schemas/ModelProvider" } }
+        endpoints: { type: array, items: { $ref: "#/components/schemas/ModelEndpoint" } }
+
+    ModelProvider:
+      type: object
+      properties:
+        provider_id: { type: string }
+        display_name: { type: string }
+        provider_type: { type: string }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+
+    ModelEndpoint:
+      type: object
+      properties:
+        endpoint_id: { type: string, format: uuid }
+        provider_id: { type: string }
+        endpoint_name: { type: string }
+        deployment_type: { type: string }
+        region_code: { type: string, nullable: true }
+        base_url: { type: string, nullable: true }
+        credential_source:
+          type: string
+          enum: [CIPHERTEXT, ENV_REF, NONE]
+          description: 凭据来源枚举。CIPHERTEXT=界面录入并加密落库；ENV_REF=环境变量引用；NONE=无凭据
+        credential_masked:
+          type: string
+          description: 打码后的凭据（如 sk-****6e22）；永不回显明文
+        has_credential:
+          type: boolean
+          description: 是否已配置凭据（不含任何明文信息）
+        model_ids:
+          type: string
+          description: 该端点已登记的模型版本（逗号分隔）；为空表示"尚无模型版本，不参与路由"
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+
+    CreateModelProviderRequest:
+      type: object
+      required: [display_name, provider_type, endpoint]
+      properties:
+        provider_id:
+          type: string
+          pattern: ^[a-z0-9]+(-[a-z0-9]+)*$
+          minLength: 2
+          maxLength: 63
+          description: |
+            可选。留空则由 display_name 派生（大写转小写，安全分隔符折叠为单个 '-'）。
+            **派生只在无损映射时成立**：显示名含中文、重音字母、emoji 等不可映射字符时，
+            服务端拒绝隐式派生并返回 400，此时必须显式提供本字段。
+            该形状同时是 /api/v1/admin/model-providers/{id}/verify 的路径参数，故强制 URL 安全；
+            显式提供时执行同一校验，不允许 '/'、'..'、空格等。
+        display_name: { type: string }
+        provider_type: { type: string, enum: [OPENAI_COMPATIBLE], description: 仅支持 OPENAI_COMPATIBLE（MOCK 已下线） }
+        status: { type: string, enum: [ACTIVE, DISABLED], default: ACTIVE }
+        endpoint:
+          type: object
+          description: 首个端点（必填；地址与凭据引用都在端点上）
+          required: [endpoint_name, deployment_type]
+          properties:
+            endpoint_name: { type: string }
+            deployment_type:
+              type: string
+              enum: [HTTP]
+              description: 仅支持 HTTP（真实网络调用）；MOCK 进程内确定性模拟形态已下线
+            region_code: { type: string, nullable: true }
+            base_url:
+              type: string
+              nullable: true
+              description: deployment_type=HTTP 时必填，须以 http:// 或 https:// 开头
+            credential_ref:
+              type: string
+              nullable: true
+              description: |
+                秘密存储中的**引用名**（如 ODAP_LLM_API_KEY），不是密钥本身。
+                与 api_key 二选一（HTTP 端点至少一个）。二者同时提供返回 400。
+            api_key:
+              type: string
+              nullable: true
+              description: |
+                明文密钥（**只入不出**）：与 credential_ref 二选一。
+                服务端 AES-256-GCM 信封加密落库，响应与审计绝不回显明文；
+                未配置 ODAP_SECRET_MASTER_KEY 时该路径 fail-closed 返回 503。
+            status: { type: string, enum: [ACTIVE, DISABLED], default: ACTIVE }
+
+    CreatedModelProvider:
+      type: object
+      description: 新建成功响应。provider_id 为 TEXT 主键（非 uuid），故不使用通用 CreatedResource。
+      required: [provider_id, endpoint_id]
+      properties:
+        provider_id: { type: string }
+        endpoint_id: { type: string, format: uuid }
+        endpoint_name: { type: string }
+        status: { type: string }
+        credential_source: { type: string, enum: [CIPHERTEXT, ENV_REF, NONE] }
+        credential_masked: { type: string, description: 打码后的凭据；永不回显明文 }
+        has_credential: { type: boolean }
+
+    ProbeModelProviderRequest:
+      type: object
+      required: [deployment_type]
+      properties:
+        deployment_type:
+          type: string
+          enum: [HTTP]
+          description: 仅支持 HTTP；缺省视为 HTTP。MOCK 已下线，传入即返回 400
+        base_url:
+          type: string
+          description: HTTP 探测必填，须以 http:// 或 https:// 开头
+        credential_ref:
+          type: string
+          description: 环境变量引用名；与 api_key 二选一（HTTP 探测至少一个）
+        api_key:
+          type: string
+          description: 明文密钥（只入不出），仅用于本次探测解析不落库
+        model_id:
+          type: string
+          description: |
+            探测用模型名。缺省时退化为 GET {base_url}/models，仅验证鉴权与寻址，
+            不消耗推理配额。指定时调用一次聊天补全（max_tokens=1）以验证模型可用。
+        endpoint_id:
+          type: string
+          format: uuid
+          description: |
+            指名一个已落库的端点。当请求未提供 api_key / credential_ref 时，
+            服务端改用该端点已存凭据（密文优先，解密失败不回落）与地址探测——
+            供「编辑接入」弹窗的「模型测试」使用，无需重新粘贴明文密钥。
+            同时提供凭据时以请求中的凭据为准。
+
+    ProbeResult:
+      type: object
+      required: [ok, latency_ms, message]
+      properties:
+        ok: { type: boolean }
+        latency_ms: { type: integer, format: int64 }
+        status_code: { type: integer, description: 供应商返回的 HTTP 状态码（网络失败时为 0） }
+        error_code: { type: string, description: 已登记错误码；成功时省略 }
+        message: { type: string, description: 面向用户的可执行诊断 }
+        vendor_error_snippet:
+          type: string
+          description: 供应商错误回显（已二次脱敏并截断至 200 字符）
+        preview:
+          type: string
+          description: 成功时的模型输出预览（截断至 200 字符）
+
+    RegisterModelRevisionRequest:
+      type: object
+      required: [model_id, capability_revision, capabilities]
+      properties:
+        model_id:
+          type: string
+          description: 模型标识（如 deepseek-chat）。llm.model_revisions.model_id。
+        revision_label:
+          type: string
+          description: 模型版本修订标识（可空）。与 endpoint_id + model_id 一起构成重复登记的判定键。
+        capability_revision:
+          type: string
+          description: 能力档案的修订标识；llm.capability_profiles.revision 为 NOT NULL，故必填。
+        capability_verified:
+          type: boolean
+          description: |
+            能力是否已经验证。true → 档案落 VERIFIED 并记录验证时间；false（缺省）→ 落 UNVERIFIED。
+            两种状态都参与路由，区别只是 UNVERIFIED 会在装配诊断里留痕说明能力未经探测验证。
+        capabilities:
+          $ref: "#/components/schemas/ModelCapabilities"
+
+    ModelCapabilities:
+      type: object
+      required: [max_context_tokens]
+      description: |
+        能力声明（snake_case，与 llm.capability_profiles.capabilities 落库字段一致）。
+        未知字段会被直接拒绝：字段名拼错会让该能力静默取零值，从而改变路由与结构化输出行为。
+      properties:
+        native_schema:
+          type: boolean
+          description: 是否原生支持严格 Schema 约束生成；false 表示只能自由生成后本地校验
+        supports_seed:
+          type: boolean
+          description: 是否支持确定性 seed（仅在请求带 seed 时作为硬约束）
+        supports_tools:
+          type: boolean
+          description: 是否支持工具调用（仅在请求带 工具 时作为硬约束）
+        max_context_tokens:
+          type: integer
+          description: 最大上下文 tokens；必须为正整数，为 0 会导致该模型在装配期被排除
+
+    ModelRevision:
+      type: object
+      required: [model_revision_id, endpoint_id, model_id, capability_digest, status]
+      properties:
+        model_revision_id: { type: string, format: uuid }
+        endpoint_id: { type: string, format: uuid }
+        model_id: { type: string }
+        revision_label: { type: string, description: 可空；空串表示无修订标识 }
+        capability_digest:
+          type: string
+          description: 内容寻址的能力档案主键（规范化 capabilities 的 SHA-256）
+        capability_revision: { type: string }
+        capability_status: { type: string, enum: [VERIFIED, UNVERIFIED, REVOKED] }
+        status: { type: string, enum: [ACTIVE, DISABLED] }
+        capabilities: { $ref: "#/components/schemas/ModelCapabilities" }
+        created_at: { type: string, format: date-time }
+
+    ModelRevisionList:
+      type: object
+      required: [endpoint_id, models]
+      properties:
+        endpoint_id: { type: string, format: uuid }
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/ModelRevision" }
+
+    RegisteredModelRevision:
+      type: object
+      required: [model_revision_id, endpoint_id, model_id, capability_digest, capability_status, status]
+      properties:
+        model_revision_id: { type: string, format: uuid }
+        endpoint_id: { type: string, format: uuid }
+        model_id: { type: string }
+        revision_label: { type: string }
+        capability_digest: { type: string }
+        capability_revision: { type: string }
+        capability_status: { type: string, enum: [VERIFIED, UNVERIFIED, REVOKED] }
+        capabilities: { $ref: "#/components/schemas/ModelCapabilities" }
+        status: { type: string, enum: [ACTIVE, DISABLED] }
+
+    Connector:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        plugin_key: { type: string }
+        name: { type: string }
+        plugin_kind: { type: string }
+        installation_state: { type: string, enum: [ACTIVE, UPGRADING, ROLLED_BACK, DISABLED] }
+        installed_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    OpsAlerts:
+      type: object
+      required: [dead_letter_events, failed_or_manual_runs, unknown_tool_calls, unresolved_external_operations]
+      properties:
+        dead_letter_events: { type: integer }
+        failed_or_manual_runs: { type: integer }
+        unknown_tool_calls: { type: integer }
+        unresolved_external_operations: { type: integer }
+        generated_at: { type: string, format: date-time }
+
+    ReleaseDecision:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        evaluation_run_id: { type: string, format: uuid }
+        policy_revision: { type: string }
+        decision: { type: string }
+        reviewer_id: { type: string, nullable: true }
+        decided_at: { type: string, format: date-time }

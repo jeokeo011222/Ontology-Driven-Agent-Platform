@@ -1,0 +1,352 @@
+[
+  {
+    "id": "99999999-9999-4999-8999-999999999999",
+    "agent_key": "finance-expense-auditor",
+    "domain": "FINANCE",
+    "description": "费用报销审核助手：读取报销单、校验制度合规性、给出审批建议（不直接写 ERP）",
+    "plugin": {
+      "id": "77777777-7777-4777-8777-777777777777",
+      "plugin_key": "agent:finance-expense-auditor",
+      "plugin_kind": "AGENT",
+      "name": "费用审核助手",
+      "description": "演示 Agent 插件",
+      "version_id": "88888888-8888-4888-8888-888888888888",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "AGENT",
+        "agent_key": "finance-expense-auditor"
+      }
+    },
+    "version": {
+      "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "expense_id": { "type": "string" },
+          "amount": { "type": "number" }
+        },
+        "required": ["expense_id"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "decision": { "type": "string", "enum": ["APPROVE", "REJECT", "NEED_INFO"] },
+          "reasons": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["decision"]
+      },
+      "prompt_template": {
+        "system": "你是企业费用报销审核助手。只依据提供的报销单数据与制度条款判断，不得臆测缺失字段。",
+        "user": "报销单：{{expense}}\n制度：{{policy}}\n请给出 decision 与 reasons。"
+      },
+      "config": {
+        "temperature": 0.0,
+        "max_output_tokens": 1024
+      },
+      "dependency_manifest": {
+        "ontology": ["finance-core@0.1.0"],
+        "tools": [
+          "erp.expense.query",
+          "erp.vendor.lookup",
+          "kb.policy.search",
+          "doc.receipt.extract",
+          "budget.check",
+          "erp.expense.decide",
+          "audit.ledger.append"
+        ],
+        "models": [],
+        "notes": "READ 类工具可直接调用；erp.expense.decide 为 EXTERNAL_WRITE，需经人工复核门禁后才可执行。本版本未声明任何模型（内置 mock 供应商已下线）：请先在「模型与推理」录入真实模型端点并登记模型版本档案，再在此声明 models，否则该 Agent 的推理调用会以 UNAVAILABLE 明确失败，不会回退到模拟端点。"
+      }
+    }
+  },
+
+  {
+    "id": "b0000001-0000-4000-8000-000000000001",
+    "agent_key": "ontology-generator",
+    "domain": "PLATFORM",
+    "description": "AI 自动生成企业本体：读取制度文档，产出结构化本体清单（类 / 关系 / 枚举 / SHACL 形状 / 样例实例），落库为 DRAFT。",
+    "is_builtin": true,
+    "plugin": {
+      "id": "c0000001-0000-4000-8000-000000000001",
+      "plugin_key": "agent:ontology-generator",
+      "plugin_kind": "AGENT",
+      "name": "AI 自动生成企业本体",
+      "description": "平台内置智能体（不可修改）",
+      "version_id": "d0000001-0000-4000-8000-000000000001",
+      "version": "0.1.0",
+      "manifest": { "kind": "AGENT", "agent_key": "ontology-generator" }
+    },
+    "version": {
+      "id": "e0000001-0000-4000-8000-000000000001",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "document_path": { "type": "string" },
+          "category_id": { "type": "string" },
+          "max_source_chars": { "type": "integer" }
+        },
+        "required": ["document_path"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ontology_key": { "type": "string" },
+          "draft_version": { "type": "string" }
+        },
+        "required": ["ontology_key"]
+      },
+      "dependency_manifest": {}
+    }
+  },
+
+  {
+    "id": "b0000002-0000-4000-8000-000000000002",
+    "agent_key": "agent-generator",
+    "domain": "PLATFORM",
+    "description": "AI 自动生成 Agent：依据本体与需求描述产出 Agent 定义、输入/输出 Schema 与首个草稿版本。",
+    "is_builtin": true,
+    "plugin": {
+      "id": "c0000002-0000-4000-8000-000000000002",
+      "plugin_key": "agent:agent-generator",
+      "plugin_kind": "AGENT",
+      "name": "AI 自动生成 Agent",
+      "description": "平台内置智能体（不可修改）",
+      "version_id": "d0000002-0000-4000-8000-000000000002",
+      "version": "0.1.0",
+      "manifest": { "kind": "AGENT", "agent_key": "agent-generator" }
+    },
+    "version": {
+      "id": "e0000002-0000-4000-8000-000000000002",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": { "requirement": { "type": "string" } },
+        "required": ["requirement"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": { "agent_key": { "type": "string" } },
+        "required": ["agent_key"]
+      },
+      "dependency_manifest": {}
+    }
+  },
+
+  {
+    "id": "b0000003-0000-4000-8000-000000000003",
+    "agent_key": "tool-generator",
+    "domain": "PLATFORM",
+    "description": "AI 自动生成工具：依据需求描述产出工具定义、参数 Schema 与效果等级（READ / EXTERNAL_WRITE / INTERNAL_WRITE）。",
+    "is_builtin": true,
+    "plugin": {
+      "id": "c0000003-0000-4000-8000-000000000003",
+      "plugin_key": "agent:tool-generator",
+      "plugin_kind": "AGENT",
+      "name": "AI 自动生成工具",
+      "description": "平台内置智能体（不可修改）",
+      "version_id": "d0000003-0000-4000-8000-000000000003",
+      "version": "0.1.0",
+      "manifest": { "kind": "AGENT", "agent_key": "tool-generator" }
+    },
+    "version": {
+      "id": "e0000003-0000-4000-8000-000000000003",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": { "requirement": { "type": "string" } },
+        "required": ["requirement"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": { "tool_key": { "type": "string" } },
+        "required": ["tool_key"]
+      },
+      "dependency_manifest": {}
+    }
+  },
+
+  {
+    "id": "b0000004-0000-4000-8000-000000000004",
+    "agent_key": "workflow-generator",
+    "domain": "PLATFORM",
+    "description": "AI 自动生成工作流：依据需求描述产出工作流节点、连线与执行顺序定义。",
+    "is_builtin": true,
+    "plugin": {
+      "id": "c0000004-0000-4000-8000-000000000004",
+      "plugin_key": "agent:workflow-generator",
+      "plugin_kind": "AGENT",
+      "name": "AI 自动生成工作流",
+      "description": "平台内置智能体（不可修改）",
+      "version_id": "d0000004-0000-4000-8000-000000000004",
+      "version": "0.1.0",
+      "manifest": { "kind": "AGENT", "agent_key": "workflow-generator" }
+    },
+    "version": {
+      "id": "e0000004-0000-4000-8000-000000000004",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": { "requirement": { "type": "string" } },
+        "required": ["requirement"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": { "workflow_key": { "type": "string" } },
+        "required": ["workflow_key"]
+      },
+      "dependency_manifest": {}
+    }
+  },
+
+  {
+    "id": "b0000005-0000-4000-8000-000000000005",
+    "agent_key": "ontology-validator",
+    "domain": "PLATFORM",
+    "description": "本体校验（SHACL）：对本体实例图执行形状校验，产出跨轮次稳定的发现项，作为发布门禁依据。",
+    "is_builtin": true,
+    "plugin": {
+      "id": "c0000005-0000-4000-8000-000000000005",
+      "plugin_key": "agent:ontology-validator",
+      "plugin_kind": "AGENT",
+      "name": "本体校验（SHACL）",
+      "description": "平台内置智能体（不可修改）",
+      "version_id": "d0000005-0000-4000-8000-000000000005",
+      "version": "0.1.0",
+      "manifest": { "kind": "AGENT", "agent_key": "ontology-validator" }
+    },
+    "version": {
+      "id": "e0000005-0000-4000-8000-000000000005",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "ontology_id": { "type": "string" },
+          "version": { "type": "string" }
+        },
+        "required": ["ontology_id"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "conforms": { "type": "boolean" },
+          "findings": { "type": "integer" }
+        },
+        "required": ["conforms"]
+      },
+      "dependency_manifest": {}
+    }
+  },
+
+  {
+    "id": "b0000006-0000-4000-8000-000000000006",
+    "agent_key": "run-orchestrator",
+    "domain": "PLATFORM",
+    "description": "运行编排（Harness）：驱动 Run 状态机推进、步骤调度与工具调用编排，终态与业务状态严格分离。",
+    "is_builtin": true,
+    "plugin": {
+      "id": "c0000006-0000-4000-8000-000000000006",
+      "plugin_key": "agent:run-orchestrator",
+      "plugin_kind": "AGENT",
+      "name": "运行编排（Harness）",
+      "description": "平台内置智能体（不可修改）",
+      "version_id": "d0000006-0000-4000-8000-000000000006",
+      "version": "0.1.0",
+      "manifest": { "kind": "AGENT", "agent_key": "run-orchestrator" }
+    },
+    "version": {
+      "id": "e0000006-0000-4000-8000-000000000006",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": { "run_id": { "type": "string" } },
+        "required": ["run_id"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": { "status": { "type": "string" } },
+        "required": ["status"]
+      },
+      "dependency_manifest": {}
+    }
+  },
+
+  {
+    "id": "b0000007-0000-4000-8000-000000000007",
+    "agent_key": "erp-reconciler",
+    "domain": "PLATFORM",
+    "description": "ERP 操作对账：对回执未知 / 失败的外部写操作执行对账，分流至人工复核，绝不静默当作成功。",
+    "is_builtin": true,
+    "plugin": {
+      "id": "c0000007-0000-4000-8000-000000000007",
+      "plugin_key": "agent:erp-reconciler",
+      "plugin_kind": "AGENT",
+      "name": "ERP 操作对账",
+      "description": "平台内置智能体（不可修改）",
+      "version_id": "d0000007-0000-4000-8000-000000000007",
+      "version": "0.1.0",
+      "manifest": { "kind": "AGENT", "agent_key": "erp-reconciler" }
+    },
+    "version": {
+      "id": "e0000007-0000-4000-8000-000000000007",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": { "operation_id": { "type": "string" } },
+        "required": ["operation_id"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": { "outcome": { "type": "string" } },
+        "required": ["outcome"]
+      },
+      "dependency_manifest": {}
+    }
+  },
+
+  {
+    "id": "b0000008-0000-4000-8000-000000000008",
+    "agent_key": "llm-governance",
+    "domain": "PLATFORM",
+    "description": "模型调用治理网关：统一限流、预算、缓存、路由与结构化输出校验，所有模型调用必须经此链路。",
+    "is_builtin": true,
+    "plugin": {
+      "id": "c0000008-0000-4000-8000-000000000008",
+      "plugin_key": "agent:llm-governance",
+      "plugin_kind": "AGENT",
+      "name": "模型调用治理网关",
+      "description": "平台内置智能体（不可修改）",
+      "version_id": "d0000008-0000-4000-8000-000000000008",
+      "version": "0.1.0",
+      "manifest": { "kind": "AGENT", "agent_key": "llm-governance" }
+    },
+    "version": {
+      "id": "e0000008-0000-4000-8000-000000000008",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "capability": { "type": "string" },
+          "tenant_id": { "type": "string" }
+        },
+        "required": ["capability"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": { "model_revision": { "type": "string" } },
+        "required": ["model_revision"]
+      },
+      "dependency_manifest": {}
+    }
+  }
+]

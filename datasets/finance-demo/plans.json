@@ -1,0 +1,55 @@
+[
+  {
+    "plan_id": "f0000000-0000-4000-8000-000000000003",
+    "intent_id": "f0000000-0000-4000-8000-000000000005",
+    "domain": "FINANCE",
+    "status": "TEMPLATE",
+    "version": 1,
+    "revision": {
+      "plan_revision_id": "f0000000-0000-4000-8000-000000000004",
+      "revision_number": 1,
+      "plan_ir": {
+        "template": true,
+        "name": "报销审核工作流（FINANCE）",
+        "domain": "FINANCE",
+        "ontology_ref": "finance-core",
+        "steps": [
+          {
+            "step_no": 1,
+            "kind": "READ_OBJECT",
+            "tool_key": "erp.expense.query",
+            "description": "读取报销单"
+          },
+          {
+            "step_no": 2,
+            "kind": "ONTOLOGY_VALIDATE",
+            "description": "按 finance-core 本体校验单据结构"
+          },
+          {
+            "step_no": 3,
+            "kind": "RULE_EVALUATE",
+            "description": "评估报销制度规则与预算约束"
+          },
+          {
+            "step_no": 4,
+            "kind": "APPROVAL",
+            "description": "超阈值单据转人工审批"
+          },
+          {
+            "step_no": 5,
+            "kind": "ERP_OPERATION",
+            "tool_key": "erp.expense.decide",
+            "description": "写回报销决定（需审批）"
+          },
+          {
+            "step_no": 6,
+            "kind": "RECONCILE",
+            "description": "结果核验与对账"
+          }
+        ]
+      },
+      "validation_status": "VALID",
+      "policy_version": "v1"
+    }
+  }
+]

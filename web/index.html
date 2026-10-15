@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="theme-color" content="#2457a7" />
+    <meta
+      name="description"
+      content="ODAP 企业本体驱动智能体平台：以企业本体约束智能体计划与执行，审批、对账、审计全链路可追溯。"
+    />
+    <title>ODAP · 企业本体驱动智能体平台</title>
+    <script>
+      // 主题预加载：在 React 挂载前读取偏好并设置 data-theme，避免 FOUC
+      (function () {
+        try {
+          var saved = localStorage.getItem('odap-theme');
+          var theme;
+          if (saved === 'light' || saved === 'dark') {
+            theme = saved;
+          } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+            theme = 'dark';
+          } else {
+            theme = 'light';
+          }
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+        } catch (e) {
+          /* 隐私模式下 localStorage 可能抛错，静默降级 */
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

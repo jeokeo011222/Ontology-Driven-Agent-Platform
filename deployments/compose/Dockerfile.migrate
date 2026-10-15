@@ -1,0 +1,36 @@
+# ODAP 数据库迁移镜像（第十六篇 §8.2 migrate / migrate-mockerp）。
+#
+# 同一个二进制支持平台迁移与 Mock ERP 迁移：
+#   平台库：  migrate up                          （读 ODAP_MIGRATE_URL，缺省回退 ODAP_DATABASE_URL）
+#   Mock ERP：migrate up --dir mockerp/migrations （--dir 含 "mockerp" → 读 MOCKERP_DATABASE_URL）
+#   MIGRATIONS_DIR 环境变量作为默认迁移目录（config.MigrationsDir），可被 --dir 覆盖。
+# 迁移 SQL 目录一并打入镜像，运行时以 WORKDIR /src 解析相对路径。
+FROM golang:1.23-bookworm AS build
+
+WORKDIR /src
+ENV GOFLAGS=-mod=mod \
+    GOPROXY=https://goproxy.cn,direct \
+    CGO_ENABLED=0
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN go build -trimpath -ldflags="-s -w" -o /out/migrate ./cmd/migrate
+
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates tzdata \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd -u 10001 -m -s /usr/sbin/nologin app
+
+WORKDIR /src
+COPY --from=build /out/migrate /usr/local/bin/migrate
+COPY --from=build /src/migrations /src/migrations
+COPY --from=build /src/mockerp/migrations /src/mockerp/migrations
+
+USER app
+
+ENTRYPOINT ["/usr/local/bin/migrate"]
+CMD ["up"]

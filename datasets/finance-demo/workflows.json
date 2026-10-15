@@ -1,0 +1,198 @@
+[
+  {
+    "id": "f0000001-0000-4000-8000-000000000001",
+    "workflow_key": "harness-run-orchestration",
+    "name": "运行编排（Harness）",
+    "description": "平台内置编排：一次受治理运行的完整生命周期——读取业务对象 → 本体验证 → 业务规则评估 → 计划生成 → 权限检查 → 工具调用 → 人工审批 → ERP 操作 → 对账 → 证据固化；任一步失败转入失败处理与人工接管。",
+    "is_builtin": true,
+    "plugin": {
+      "id": "a0000001-0000-4000-8000-000000000001",
+      "plugin_key": "workflow:harness-run-orchestration",
+      "plugin_kind": "WORKFLOW",
+      "name": "运行编排（Harness）",
+      "description": "平台内置工作流插件：受治理运行的生命周期编排",
+      "version_id": "a1000001-0000-4000-8000-000000000001",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "WORKFLOW",
+        "workflow_key": "harness-run-orchestration"
+      }
+    },
+    "version": {
+      "id": "f1000001-0000-4000-8000-000000000001",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "definition": {
+        "nodes": [
+          { "id": "start", "type": "start", "name": "开始" },
+          { "id": "read_object", "type": "READ_OBJECT", "name": "读取业务对象" },
+          { "id": "validate_ontology", "type": "ONTOLOGY_VALIDATE", "name": "本体验证" },
+          { "id": "evaluate_rules", "type": "RULE_EVALUATE", "name": "业务规则评估" },
+          { "id": "plan", "type": "AGENT_PLAN", "name": "生成执行计划" },
+          { "id": "check_permission", "type": "PERMISSION_CHECK", "name": "权限检查" },
+          { "id": "call_tool", "type": "TOOL_CALL", "name": "工具调用" },
+          { "id": "approval", "type": "APPROVAL", "name": "人工审批" },
+          { "id": "erp_operation", "type": "ERP_OPERATION", "name": "ERP 操作" },
+          { "id": "reconcile", "type": "RECONCILE", "name": "结果核验/对账" },
+          { "id": "evidence", "type": "EVIDENCE", "name": "证据生成" },
+          { "id": "branch", "type": "BRANCH", "name": "条件分支（是否需人工复核）" },
+          { "id": "failure", "type": "FAILURE_HANDLING", "name": "失败处理与人工接管" },
+          { "id": "end", "type": "end", "name": "结束" }
+        ],
+        "edges": [
+          { "from": "start", "to": "read_object" },
+          { "from": "read_object", "to": "validate_ontology" },
+          { "from": "validate_ontology", "to": "evaluate_rules" },
+          { "from": "evaluate_rules", "to": "plan" },
+          { "from": "plan", "to": "check_permission" },
+          { "from": "check_permission", "to": "call_tool" },
+          { "from": "call_tool", "to": "branch" },
+          { "from": "branch", "to": "approval" },
+          { "from": "branch", "to": "failure" },
+          { "from": "approval", "to": "erp_operation" },
+          { "from": "erp_operation", "to": "reconcile" },
+          { "from": "reconcile", "to": "evidence" },
+          { "from": "reconcile", "to": "failure" },
+          { "from": "evidence", "to": "end" },
+          { "from": "failure", "to": "end" }
+        ]
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "run_id": { "type": "string" },
+          "plan_id": { "type": "string" }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "run_status": { "type": "string" },
+          "evidence_id": { "type": "string" }
+        }
+      }
+    }
+  },
+  {
+    "id": "f0000002-0000-4000-8000-000000000002",
+    "workflow_key": "harness-reconciliation",
+    "name": "在途操作对账与人工复核",
+    "description": "平台内置编排：对 5xx / 传输失败标记为 UNKNOWN 的在途外部操作做对账，无法自动收敛的转入人工复核，最终固化证据。绝不把不确定结果当作成功或失败。",
+    "is_builtin": true,
+    "plugin": {
+      "id": "a0000002-0000-4000-8000-000000000002",
+      "plugin_key": "workflow:harness-reconciliation",
+      "plugin_kind": "WORKFLOW",
+      "name": "在途操作对账与人工复核",
+      "description": "平台内置工作流插件：不确定结果的对账与人工收敛",
+      "version_id": "a1000002-0000-4000-8000-000000000002",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "WORKFLOW",
+        "workflow_key": "harness-reconciliation"
+      }
+    },
+    "version": {
+      "id": "f1000002-0000-4000-8000-000000000002",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "definition": {
+        "nodes": [
+          { "id": "start", "type": "start", "name": "开始" },
+          { "id": "read_object", "type": "READ_OBJECT", "name": "读取在途操作记录" },
+          { "id": "reconcile", "type": "RECONCILE", "name": "结果核验/对账（判定真实落库状态）" },
+          { "id": "branch", "type": "BRANCH", "name": "条件分支（是否收敛）" },
+          { "id": "approval", "type": "APPROVAL", "name": "人工复核与裁决" },
+          { "id": "failure", "type": "FAILURE_HANDLING", "name": "失败处理与人工接管" },
+          { "id": "evidence", "type": "EVIDENCE", "name": "证据生成" },
+          { "id": "end", "type": "end", "name": "结束" }
+        ],
+        "edges": [
+          { "from": "start", "to": "read_object" },
+          { "from": "read_object", "to": "reconcile" },
+          { "from": "reconcile", "to": "branch" },
+          { "from": "branch", "to": "evidence" },
+          { "from": "branch", "to": "approval" },
+          { "from": "approval", "to": "evidence" },
+          { "from": "approval", "to": "failure" },
+          { "from": "failure", "to": "evidence" },
+          { "from": "evidence", "to": "end" }
+        ]
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "run_id": { "type": "string" },
+          "operation_id": { "type": "string" }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "reconcile_outcome": { "type": "string", "enum": ["CONVERGED", "MANUAL_REVIEW", "FAILED"] }
+        }
+      }
+    }
+  },
+  {
+    "id": "f0000003-0000-4000-8000-000000000003",
+    "workflow_key": "platform-ontology-lifecycle",
+    "name": "本体版本生命周期编排",
+    "description": "平台内置编排：本体草稿经 SHACL 校验与业务规则评估，通过后进入人工审批，未通过则进入有界修复并最终固化证据；对应本体版本 DRAFT → VALIDATING → VALID/APPROVED → PUBLISHED 的门禁流程。",
+    "is_builtin": true,
+    "plugin": {
+      "id": "a0000003-0000-4000-8000-000000000003",
+      "plugin_key": "workflow:platform-ontology-lifecycle",
+      "plugin_kind": "WORKFLOW",
+      "name": "本体版本生命周期编排",
+      "description": "平台内置工作流插件：本体校验/审批/发布门禁",
+      "version_id": "a1000003-0000-4000-8000-000000000003",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "WORKFLOW",
+        "workflow_key": "platform-ontology-lifecycle"
+      }
+    },
+    "version": {
+      "id": "f1000003-0000-4000-8000-000000000003",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "definition": {
+        "nodes": [
+          { "id": "start", "type": "start", "name": "开始" },
+          { "id": "validate_ontology", "type": "ONTOLOGY_VALIDATE", "name": "SHACL 形状约束校验" },
+          { "id": "evaluate_rules", "type": "RULE_EVALUATE", "name": "业务规则评估与闭包校验" },
+          { "id": "branch", "type": "BRANCH", "name": "条件分支（校验是否通过）" },
+          { "id": "approval", "type": "APPROVAL", "name": "人工审批与发布" },
+          { "id": "failure", "type": "FAILURE_HANDLING", "name": "有界修复与人工接管" },
+          { "id": "evidence", "type": "EVIDENCE", "name": "证据生成（finding 摘要入链）" },
+          { "id": "end", "type": "end", "name": "结束" }
+        ],
+        "edges": [
+          { "from": "start", "to": "validate_ontology" },
+          { "from": "validate_ontology", "to": "evaluate_rules" },
+          { "from": "evaluate_rules", "to": "branch" },
+          { "from": "branch", "to": "approval" },
+          { "from": "branch", "to": "failure" },
+          { "from": "approval", "to": "evidence" },
+          { "from": "failure", "to": "evidence" },
+          { "from": "evidence", "to": "end" }
+        ]
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "ontology_id": { "type": "string" },
+          "version": { "type": "string" }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "version_status": { "type": "string" },
+          "finding_digest": { "type": "string" }
+        }
+      }
+    }
+  }
+]

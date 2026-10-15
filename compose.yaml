@@ -1,0 +1,271 @@
+# ODAP 本地开发环境（第十六篇 §8.1 服务拓扑 / §8.2 Compose 骨架）。
+#
+# 最小启动路径：docker compose up -d --build
+#   → postgres / migrate / mockerp-db / migrate-mockerp / mockerp / api / worker / web
+# 可选服务通过 profile 隔离，按需追加：
+#   docker compose --profile objectstore up -d          # MinIO 对象存储（9000/9001）
+#   docker compose --profile observability up -d        # 本地 OTLP collector（4317/4318）
+#   docker compose --profile graphstore up -d           # Fuseki + TDB2 RDF 图存储（3030）
+#     配合 .env 里 GRAPHSTORE_MODE=fuseki 使用（ADR-005）
+#
+# 约定：
+#   - 所有对外端口只绑定 127.0.0.1，避免无意暴露到局域网/公网。
+#   - 迁移为一次性 job（restart: "no"）：退出码非 0 即启动失败，schema 未就绪不接受流量。
+#   - 平台库迁移（migrate，owner 账号 odap）与 Mock ERP 库迁移（migrate-mockerp）同构，
+#     均先于 api/worker/mockerp 完成。
+#   - 变量名统一大写（MOCKERP_*），并与 .env.example 一一对应。
+
+name: odap
+
+services:
+  # ── 平台数据库（ODAP）──────────────────────────────────────────────
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: odap
+      POSTGRES_USER: odap
+      POSTGRES_PASSWORD: ${ODAP_DB_PASSWORD:?set ODAP_DB_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - odap-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odap -d odap"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ── Mock ERP 独立数据库 ────────────────────────────────────────────
+  mockerp-db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: mockerp
+      POSTGRES_USER: mockerp
+      POSTGRES_PASSWORD: ${MOCKERP_DB_PASSWORD:?set MOCKERP_DB_PASSWORD}
+    ports:
+      # 默认 5433（设计书第十六篇 §8.2）；若本机 5433 被占用，可经 MOCKERP_DB_HOST_PORT
+      # 覆盖宿主映射（容器内仍为 5432，故 MOCKERP_DATABASE_URL 不受影响）。
+      - "127.0.0.1:${MOCKERP_DB_HOST_PORT:-5433}:5432"
+    volumes:
+      - mockerp-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mockerp -d mockerp"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ── 平台库迁移（一次性 job；owner 账号 odap，见迁移 000011）────────
+  migrate:
+    build:
+      context: .
+      dockerfile: deployments/compose/Dockerfile.migrate
+    environment:
+      # config.Load 无条件要求 ODAP_DATABASE_URL；本 job 实际使用 ODAP_MIGRATE_URL（owner）
+      ODAP_DATABASE_URL: ${ODAP_DATABASE_URL:?set ODAP_DATABASE_URL}
+      ODAP_MIGRATE_URL: ${ODAP_MIGRATE_URL:?set ODAP_MIGRATE_URL}
+      MIGRATIONS_DIR: migrations/platform
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # ── Mock ERP 库迁移（一次性 job）──────────────────────────────────
+  # 必须显式传 --url 指向 MOCKERP_DATABASE_URL：不能只靠 --dir 推断方向。
+  # （main.go:54-64 中 --url 优先级最高；--dir 含 "mockerp" 虽也会解析到
+  #  MOCKERP_DATABASE_URL，但显式 --url 可消除歧义，避免误打到平台库。）
+  migrate-mockerp:
+    build:
+      context: .
+      dockerfile: deployments/compose/Dockerfile.migrate
+    command: ["up", "--dir", "mockerp/migrations", "--url", "${MOCKERP_DATABASE_URL:?set MOCKERP_DATABASE_URL}"]
+    environment:
+      ODAP_DATABASE_URL: ${ODAP_DATABASE_URL:?set ODAP_DATABASE_URL}
+      MOCKERP_DATABASE_URL: ${MOCKERP_DATABASE_URL:?set MOCKERP_DATABASE_URL}
+      MIGRATIONS_DIR: mockerp/migrations
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      mockerp-db:
+        condition: service_healthy
+    restart: "no"
+
+  # ── Mock ERP 服务 ─────────────────────────────────────────────────
+  mockerp:
+    build:
+      context: .
+      dockerfile: deployments/compose/Dockerfile.mockerp
+    environment:
+      MOCKERP_DATABASE_URL: ${MOCKERP_DATABASE_URL:?set MOCKERP_DATABASE_URL}
+      MOCKERP_HTTP_ADDR: ${MOCKERP_HTTP_ADDR:?set MOCKERP_HTTP_ADDR}
+      APP_ENV: ${APP_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      mockerp-db:
+        condition: service_healthy
+      migrate-mockerp:
+        condition: service_completed_successfully
+
+  # ── ODAP API Server ───────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: deployments/compose/Dockerfile.api
+    environment:
+      ODAP_DATABASE_URL: ${ODAP_DATABASE_URL:?set ODAP_DATABASE_URL}
+      ODAP_HTTP_ADDR: ${ODAP_HTTP_ADDR:?set ODAP_HTTP_ADDR}
+      MOCK_ERP_BASE_URL: http://mockerp:8081
+      APP_ENV: ${APP_ENV:-development}
+      OBJECT_STORE_MODE: ${OBJECT_STORE_MODE:-local}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # 图存储后端：默认 postgres（== 旧行为，无需额外服务）。
+      # 设为 fuseki 时必须同时 `--profile graphstore` 启动 fuseki 服务，
+      # 否则 /readyz 会如实失败（这是有意的：图存储不可用时不接受流量）。
+      # 注意此处刻意**不写 depends_on: fuseki** —— fuseki 属于可选 profile，
+      # 声明依赖会让默认 `docker compose up` 因"依赖的服务未启用"而报错。
+      GRAPHSTORE_MODE: ${GRAPHSTORE_MODE:-postgres}
+      FUSEKI_ENDPOINT: ${FUSEKI_ENDPOINT:-http://fuseki:3030/odap}
+      FUSEKI_USERNAME: ${FUSEKI_USERNAME:-}
+      FUSEKI_PASSWORD: ${FUSEKI_PASSWORD:-}
+      # ── 生成类端点的真实模型端点（本体/Agent/工具/工作流 AI 自动生成）──────
+      # 全部留空时生成端点 fail-closed 返回 503（不做假生成）。配置任一非空即启用
+      # 对应 HTTP 端点；凭据可走 env 引用路径，也可在界面录入并以 AES-256-GCM
+      # 密文落库（llm.endpoints.credential_ciphertext）。明文不进入 SQL 参数/
+      # 审计/日志/SSE（第九篇 §4.4）。
+      ODAP_LLM_BASE_URL: ${ODAP_LLM_BASE_URL:-}
+      ODAP_LLM_API_KEY: ${ODAP_LLM_API_KEY:-}
+      ODAP_LLM_API_KEY_REF: ${ODAP_LLM_API_KEY_REF:-}
+      ODAP_SECRET_MASTER_KEY: ${ODAP_SECRET_MASTER_KEY:-}
+      # 制度文档语料根目录（默认由镜像 Dockerfile 设为 /app/docs/资料）。
+      ODAP_DOCS_ROOT: ${ODAP_DOCS_ROOT:-/app/docs/资料}
+      # 上传文档落盘根目录（AI 自动生成的本地文件来源）。与只读的语料目录分开：
+      # 用户上传属于运行期数据，必须落在可写卷上。
+      ODAP_UPLOAD_ROOT: ${ODAP_UPLOAD_ROOT:-/app/var/uploads}
+    volumes:
+      # 制度文档语料（AI 自动生成的读取来源）以只读方式挂载：语料属于仓库资产，
+      # 不打进镜像（.dockerignore 有意排除 docs/）。缺此挂载时生成端点会以
+      # 404“制度文档不存在”fail-closed，而非静默产出假内容。
+      - ./docs/资料:/app/docs/资料:ro
+      # 上传文档目录（可写）：AI 自动生成弹窗选择的本地文档落盘于此。
+      - ./var/uploads:/app/var/uploads
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      migrate-mockerp:
+        condition: service_completed_successfully
+      mockerp:
+        condition: service_started
+
+  # ── 异步任务 Worker ───────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: deployments/compose/Dockerfile.worker
+    environment:
+      ODAP_DATABASE_URL: ${ODAP_DATABASE_URL:?set ODAP_DATABASE_URL}
+      MOCK_ERP_BASE_URL: http://mockerp:8081
+      APP_ENV: ${APP_ENV:-development}
+      OBJECT_STORE_MODE: ${OBJECT_STORE_MODE:-local}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:?set WORKER_CONCURRENCY}
+      WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS:?set WORKER_LEASE_SECONDS}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      migrate-mockerp:
+        condition: service_completed_successfully
+
+  # ── React 前端（nginx 托管构建产物，/api 反代到 api）──────────────
+  web:
+    build:
+      context: .
+      dockerfile: deployments/compose/Dockerfile.web
+      args:
+        # 演示账号预填（构建期变量，改后需 --build 重建 web）。默认 false ——
+        # 镜像产物默认不预填任何账号；本地演示时在 .env 里设 ODAP_DEV_PREFILL=true。
+        VITE_DEV_PREFILL: ${ODAP_DEV_PREFILL:-false}
+        VITE_DEV_LOGIN_NAME: ${ODAP_DEV_LOGIN_NAME:-demo.admin}
+        VITE_DEV_LOGIN_PASSWORD: ${ODAP_DEV_LOGIN_PASSWORD:-odap-demo-2026}
+    environment:
+      # 运行时后端地址（供 nginx/前端读取）；VITE_API_BASE 为构建期变量，运行时设置不生效
+      API_BASE_URL: http://api:8080
+      VITE_API_BASE: /api/v1
+      # 开发演示身份：只有显式设置时才由 nginx 注入 X-Odap-Dev-* 头。
+      # 默认空 → nginx 不发该头 → /api 返回 401（与生产一致）。
+      # 仅 APP_ENV=development 下后端才会装配 DevResolver 读取这些头。
+      ODAP_DEV_TENANT: ${ODAP_DEV_TENANT:-}
+      ODAP_DEV_SUBJECT: ${ODAP_DEV_SUBJECT:-}
+      ODAP_DEV_SCOPES: ${ODAP_DEV_SCOPES:-}
+    ports:
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      api:
+        condition: service_started
+
+  # ── 可选：S3 兼容对象存储（profile: objectstore）──────────────────
+  objectstore:
+    image: minio/minio:RELEASE.2024-01-16T16-07-39Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${OBJECT_STORE_ACCESS_KEY:?set OBJECT_STORE_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${OBJECT_STORE_SECRET_KEY:?set OBJECT_STORE_SECRET_KEY}
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - odap-objectstore:/data
+    profiles: ["objectstore"]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ── 可选：RDF 图存储（profile: graphstore）────────────────────────
+  # Apache Jena Fuseki + TDB2：ODAP 的语义图存储（docs/图数据库的选型.md、ADR-005）。
+  #
+  # 为什么用 entrypoint 直接调 fuseki-server 而不是依赖镜像的自动建库逻辑：
+  # 显式声明 --tdb2/--update/--loc 三个开关，使"数据集类型、是否允许更新、
+  # 落盘位置"成为可审计的配置，而不是镜像版本的隐含行为。
+  #
+  # ⚠️ 默认**不启用认证**，端口只绑定 127.0.0.1（与本节其他服务同约定）。
+  # 未经认证的 SPARQL 端点等价于"任意 RDF 读写"，任何非本机部署都必须启用
+  # 认证（FUSEKI_USERNAME/FUSEKI_PASSWORD + 数据集的 shiro 配置）并加 TLS。
+  fuseki:
+    image: stain/jena-fuseki:5.1.0
+    entrypoint: ["/jena-fuseki/fuseki-server"]
+    command:
+      - "--tdb2"
+      - "--update"
+      - "--loc=/fuseki/databases/odap"
+      - "/odap"
+    ports:
+      - "127.0.0.1:${FUSEKI_HOST_PORT:-3030}:3030"
+    volumes:
+      - odap-fuseki:/fuseki/databases
+    profiles: ["graphstore"]
+
+  # ── 可选：本地可观测性采集（profile: observability）───────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.96.0
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./deployments/config/otel-collector.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+    profiles: ["observability"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  odap-postgres:
+  mockerp-postgres:
+  odap-objectstore:
+  odap-fuseki:

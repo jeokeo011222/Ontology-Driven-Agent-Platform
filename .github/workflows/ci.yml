@@ -1,0 +1,347 @@
+# ODAP CI 流水线（第十六篇 §10.1 推荐流水线 / §10.3 发布硬门禁）。
+#
+# 设计原则：**CI 只做编排，命令全在 tools/ci/*.sh 里**。
+# 这样"本地 bash tools/ci/run-all.sh 跑得通"与"CI 跑得通"是同一件事，
+# 不存在"只有 CI 才能复现"的步骤。
+#
+# 阻断关系（§10.1："每一阶段应明确失败是否阻断后续步骤"）：
+#   01 format ──┬─> 02 unit
+#               ├─> 03 migrate ──┬─> 05 integration
+#               │                ├─> 07 e2e
+#               │                ├─> 08 security
+#               │                └─> 09 fault injection
+#               ├─> 04 contract
+#               ├─> 06 semantic
+#               └─> 10 graphstore（图存储契约自检，docs/图数据库的选型.md / ADR-004）
+#   以上全部 ──> 11 quality gate ──> 12 artifact ──> 13 smoke
+#   高风险阶段（security / fault injection / graphstore）**不设为"仅报告"**：
+#   它们是质量门的输入，失败即阻断发布（§10.1 末段）。
+#
+# 编号约定：作业编号 = **执行顺序**（非第十六篇 §10.1 的"级号"）。
+# tools/ci/*.sh 的脚本前缀沿用级号（10-artifact / 11-smoke / 12-graphstore），
+# 与作业编号一一对应但数字不同；两者都以 tools/ci/run-all.sh 输出为准。
+
+name: ODAP CI
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GOFLAGS: -mod=mod
+  GOPROXY: https://goproxy.cn,direct
+  # §10.3：缺前置条件即失败（而不是"跳过"）。本地开发不受影响（默认 0）。
+  CI_STRICT: "1"
+
+jobs:
+  # ── 01 格式检查 / 静态分析 / 构建 ───────────────────────────────────
+  format:
+    name: "01 格式与静态分析"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+      - run: bash tools/ci/01-format.sh
+
+  # ── 02 Go 单元测试 + 前端类型检查 ───────────────────────────────────
+  unit:
+    name: "02 单元测试 + 前端类型检查"
+    needs: [format]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: bash tools/ci/02-unit.sh
+        env:
+          CI_INSTALL_WEB_DEPS: "1"
+
+  # ── 03 数据库迁移验证 ───────────────────────────────────────────────
+  migrate:
+    name: "03 数据库迁移验证"
+    needs: [format]
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: odap
+          POSTGRES_USER: odap
+          POSTGRES_PASSWORD: odap
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U odap -d odap"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      ODAP_DATABASE_URL: postgres://odap_app:apppw@127.0.0.1:5432/odap?sslmode=disable
+      ODAP_MIGRATE_URL: postgres://odap:odap@127.0.0.1:5432/odap?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+      - run: bash tools/ci/03-migrate.sh
+
+  # ── 04 契约测试 ─────────────────────────────────────────────────────
+  contract:
+    name: "04 契约测试"
+    needs: [format]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+      - run: bash tools/ci/04-contract.sh
+
+  # ── 05 集成测试（真实 PostgreSQL）──────────────────────────────────
+  integration:
+    name: "05 集成测试"
+    needs: [migrate]
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: odap
+          POSTGRES_USER: odap
+          POSTGRES_PASSWORD: odap
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U odap -d odap"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      ODAP_DATABASE_URL: postgres://odap_app:apppw@127.0.0.1:5432/odap?sslmode=disable
+      ODAP_MIGRATE_URL: postgres://odap:odap@127.0.0.1:5432/odap?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+      # 每个 job 独立起库，故先迁移再跑断言（迁移幂等，约 10s）。
+      - run: bash tools/ci/03-migrate.sh
+      - run: bash tools/ci/05-integration.sh
+
+  # ── 06 本体 / SHACL / Semantic 回归 ────────────────────────────────
+  semantic:
+    name: "06 本体语义回归"
+    needs: [format]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+      - run: bash tools/ci/06-semantic.sh
+
+  # ── 07 Mock ERP 端到端 ─────────────────────────────────────────────
+  e2e:
+    name: "07 Mock ERP 端到端"
+    needs: [migrate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+      - name: 准备 .env（基于 .env.example）
+        run: |
+          cp .env.example .env
+          sed -i 's#^ODAP_DB_PASSWORD=.*#ODAP_DB_PASSWORD=odap#' .env
+          sed -i 's#^MOCKERP_DB_PASSWORD=.*#MOCKERP_DB_PASSWORD=mockerp#' .env
+          sed -i 's#^ODAP_MIGRATE_URL=.*#ODAP_MIGRATE_URL=postgres://odap:odap@postgres:5432/odap?sslmode=disable#' .env
+          sed -i 's#^MOCKERP_DATABASE_URL=.*#MOCKERP_DATABASE_URL=postgres://mockerp:mockerp@mockerp-db:5432/mockerp?sslmode=disable#' .env
+      - name: 拉起最小拓扑并导入演示数据
+        run: |
+          docker compose up -d --build postgres migrate mockerp-db migrate-mockerp mockerp api
+          docker compose run --rm api seed --dataset finance-demo || true
+      - name: 等待 API 就绪
+        run: |
+          for i in $(seq 1 40); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8080/readyz; then exit 0; fi
+            sleep 3
+          done
+          docker compose logs --tail 40 api
+          exit 1
+      - run: bash tools/ci/07-e2e.sh
+        env:
+          ODAP_DATABASE_URL: postgres://odap_app:apppw@127.0.0.1:5432/odap?sslmode=disable
+          ODAP_MIGRATE_URL: postgres://odap:odap@127.0.0.1:5432/odap?sslmode=disable
+          ODAP_E2E_BASE_URL: http://127.0.0.1:8080
+      - name: 回收
+        if: always()
+        run: docker compose down -v
+
+  # ── 08 安全测试 ─────────────────────────────────────────────────────
+  security:
+    name: "08 安全测试"
+    needs: [migrate]
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: odap
+          POSTGRES_USER: odap
+          POSTGRES_PASSWORD: odap
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U odap -d odap"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      ODAP_DATABASE_URL: postgres://odap_app:apppw@127.0.0.1:5432/odap?sslmode=disable
+      ODAP_MIGRATE_URL: postgres://odap:odap@127.0.0.1:5432/odap?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+      - run: bash tools/ci/03-migrate.sh
+      - run: bash tools/ci/08-security.sh
+
+  # ── 09 故障注入 ─────────────────────────────────────────────────────
+  fault_injection:
+    name: "09 故障注入"
+    needs: [migrate]
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: odap
+          POSTGRES_USER: odap
+          POSTGRES_PASSWORD: odap
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U odap -d odap"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      ODAP_DATABASE_URL: postgres://odap_app:apppw@127.0.0.1:5432/odap?sslmode=disable
+      ODAP_MIGRATE_URL: postgres://odap:odap@127.0.0.1:5432/odap?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+      - run: bash tools/ci/03-migrate.sh
+      - run: bash tools/ci/09-fault-injection.sh
+
+  # ── 10 图存储契约自检（真实 SPARQL 引擎）────────────────────────────
+  # 与单测里的 HTTP 替身不同：这里必须证明适配器生成的 SPARQL 在**真实引擎**上成立。
+  # 12-graphstore.sh 走 L1（已配置端点）→ L2（compose 临时 Fuseki）→ L3（RDFLib）降级；
+  # CI 里显式装 rdflib 并指定解释器，保证 L3 一定可用（L2 依赖镜像拉取，可能受限）。
+  graphstore:
+    name: "10 图存储契约自检"
+    needs: [format]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装 RDFLib（L3 真实 SPARQL 1.1 引擎语义）
+        run: python3 -m pip install --upgrade pip rdflib
+      - run: bash tools/ci/12-graphstore.sh
+        env:
+          GRAPHSTORE_CHECK_PY: python3
+          # L3 起在 127.0.0.1：必须绕开宿主代理，否则探测被拦截。
+          NO_PROXY: "127.0.0.1,localhost"
+          no_proxy: "127.0.0.1,localhost"
+
+  # ── 11 质量门（发布硬门禁汇总）─────────────────────────────────────
+  quality_gate:
+    name: "11 Quality Gate"
+    needs: [format, unit, migrate, contract, integration, semantic, e2e, security, fault_injection, graphstore]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: 汇总各阶段结果
+        run: |
+          set -euo pipefail
+          results="${{ needs.format.result }} ${{ needs.unit.result }} ${{ needs.migrate.result }} \
+          ${{ needs.contract.result }} ${{ needs.integration.result }} ${{ needs.semantic.result }} \
+          ${{ needs.e2e.result }} ${{ needs.security.result }} ${{ needs.fault_injection.result }} \
+          ${{ needs.graphstore.result }}"
+          names="format unit migrate contract integration semantic e2e security fault_injection graphstore"
+          echo "阶段结果（$names）：$results"
+          fail=0
+          for r in $results; do
+            if [ "$r" != "success" ]; then fail=$((fail + 1)); fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::$fail 个阶段未通过——按 §10.3 阻断发布"
+            exit 1
+          fi
+          echo "全部阶段通过，允许构建候选制品"
+
+  # ── 12 不可变候选制品 ──────────────────────────────────────────────
+  artifact:
+    name: "12 构建候选制品"
+    needs: [quality_gate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+      - run: bash tools/ci/10-artifact.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: odap-candidate-${{ github.sha }}
+          path: artifacts/ci/
+          retention-days: 14
+
+  # ── 13 部署冒烟 ─────────────────────────────────────────────────────
+  smoke:
+    name: "13 部署冒烟"
+    needs: [artifact]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 准备 .env（基于 .env.example）
+        run: |
+          cp .env.example .env
+          sed -i 's#^ODAP_DB_PASSWORD=.*#ODAP_DB_PASSWORD=odap#' .env
+          sed -i 's#^MOCKERP_DB_PASSWORD=.*#MOCKERP_DB_PASSWORD=mockerp#' .env
+          sed -i 's#^ODAP_MIGRATE_URL=.*#ODAP_MIGRATE_URL=postgres://odap:odap@postgres:5432/odap?sslmode=disable#' .env
+          sed -i 's#^MOCKERP_DATABASE_URL=.*#MOCKERP_DATABASE_URL=postgres://mockerp:mockerp@mockerp-db:5432/mockerp?sslmode=disable#' .env
+      - run: bash tools/ci/11-smoke.sh

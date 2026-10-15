@@ -1,0 +1,17 @@
+[
+  {
+    "id": "f0000000-0000-4000-8000-000000000005",
+    "requested_by": "22222222-2222-2222-2222-222222222222",
+    "agent_version_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "status": "CREATED",
+    "input_payload": {
+      "expense_id": "EXP-2026-0001",
+      "amount": 1280.5,
+      "submitted_by": "EMP-1001",
+      "note": "客户拜访差旅费"
+    },
+    "correlation_id": "f0000000-0000-4000-8000-000000000006",
+    "priority": 100,
+    "max_attempts": 3
+  }
+]

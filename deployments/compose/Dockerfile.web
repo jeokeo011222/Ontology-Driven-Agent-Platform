@@ -1,0 +1,33 @@
+# ODAP 前端镜像（第十六篇 §8.2 web 服务）。
+# 多阶段：node 构建 web/ 产物 → nginx 托管到 5173，并将 /api 反代到 api:8080。
+FROM node:22-bookworm-slim AS build
+
+WORKDIR /app
+COPY web/package*.json ./
+RUN npm ci || npm install
+
+COPY web/ ./
+
+# 演示账号预填（构建期变量，见 compose.yaml 的 web.build.args）。
+# 默认 false —— 生产构建产物不含任何演示口令；本地演示在 .env 里设
+# ODAP_DEV_PREFILL=true 并 --build 重建 web 即可让登录页预填演示账号。
+ARG VITE_DEV_PREFILL=false
+ARG VITE_DEV_LOGIN_NAME=demo.admin
+ARG VITE_DEV_LOGIN_PASSWORD=odap-demo-2026
+ENV VITE_DEV_PREFILL=$VITE_DEV_PREFILL \
+    VITE_DEV_LOGIN_NAME=$VITE_DEV_LOGIN_NAME \
+    VITE_DEV_LOGIN_PASSWORD=$VITE_DEV_LOGIN_PASSWORD
+
+RUN npm run build
+
+FROM nginx:1.27-alpine AS runtime
+
+# 放到 templates/ 而非 conf.d/：官方镜像的 entrypoint 会用 envsubst 把 ${ODAP_DEV_*}
+# 替换成容器环境变量后再落到 conf.d/default.conf（缺省为空 → 不发送身份头 → 401，
+# 与生产行为一致）。详见 web.conf.template 文件头说明。
+COPY deployments/nginx/web.conf.template /etc/nginx/templates/default.conf.template
+COPY --from=build /app/dist /usr/share/nginx/html
+
+EXPOSE 5173
+
+# nginx 默认前台运行（nginx:alpine 的 CMD）

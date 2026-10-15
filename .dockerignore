@@ -1,0 +1,37 @@
+# Docker 构建上下文排除项（第十六篇 §8.2）。
+# 目标：缩小上下文、避免把本机依赖与产物、密钥、文档打进镜像。
+
+# 版本控制与工作区
+.git
+.gitignore
+.workbuddy/
+
+# 文档与说明（镜像构建不需要）
+*.md
+docs/
+
+# 前端依赖与构建产物（在镜像内重新 npm ci + build）
+**/node_modules/
+web/node_modules/
+web/dist/
+
+# 一次性 UI 迁移的本地备份（脚本 tools/*.py 的输入快照，不是源码）
+web/.backup-pageheader/
+
+# Go 本地构建产物
+bin/
+dist/
+*.exe
+*.test
+*.out
+
+# 环境与密钥
+.env
+*.local
+.odap-objectstore/
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

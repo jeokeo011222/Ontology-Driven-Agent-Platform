@@ -1,0 +1,83 @@
+# ODAP web 容器 nginx 配置模板（第十六篇 §8.2 web 服务）。
+#
+# 本文件是 **模板**：nginx 官方镜像的 /docker-entrypoint.d/20-envsubst-on-templates.sh
+# 会把 ${VAR} 用容器环境变量替换后输出到 /etc/nginx/conf.d/default.conf。
+# 只有 ${大写} 形式会被替换；$host / $uri 这类 nginx 变量不受影响。
+#
+# 为什么需要模板：本文档原先只反代 /api，未注入任何身份头，于是浏览器打开
+# 业务工作台必然得到 401 UNAUTHENTICATED —— 开发演示根本看不到界面。
+# 后端在 APP_ENV=development 下装配 DevResolver，从 X-Odap-Dev-* 头解析身份
+# （internal/api/middleware/auth.go）。这条链路需要有人提供头，而 compose 栈里没有。
+#
+# 安全边界：ODAP_DEV_TENANT / ODAP_DEV_SUBJECT 默认空。nginx 对空值的
+# proxy_set_header **不会发送该头**，于是服务端按未认证处理（401），
+# 与生产行为完全一致；只有显式在 .env 中填入种子租户/主体才会注入。
+# 生产部署（APP_ENV=production）不要设置这两个变量 —— 后端也不会装配 DevResolver。
+server {
+    listen 5173;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # 带内容哈希的静态资源：文件名变化即 URL 变化，可长期强缓存。
+    # 单一 Cache-Control，避免与 expires 叠加产生重复头。
+    location /assets/ {
+        add_header Cache-Control "public, max-age=604800, immutable" always;
+        try_files $uri =404;
+    }
+
+    # 入口 HTML 必须每次回源校验 —— **这是"版本指针"，不是内容**。
+    #
+    # 缺陷 #23：本文件原先只给 /assets/ 配了 immutable 缓存，location / 完全
+    # 没有缓存指令，于是 index.html 走浏览器的启发式缓存。后果是一条"钉死"链：
+    #   旧 index.html（启发式缓存）→ 引用旧哈希 index-<old>.js（immutable 缓存 7 天）
+    #   → 旧哈希在服务端已 404，但浏览器从不回源 → 用户长期跑旧包。
+    # 表现为"代码和镜像都修好了、服务端返回的 index.html 也已指向新包，用户仍看到
+    # 已被修复的错误"。修掉它必须让入口 HTML 不可缓存：每次加载都回源拿新的哈希。
+    location = /index.html {
+        add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+        add_header Pragma "no-cache" always;
+        try_files $uri =404;
+    }
+
+    # 根级无哈希静态文件同理（改名不会自动失效）。
+    location = /favicon.svg {
+        add_header Cache-Control "no-cache" always;
+        try_files $uri =404;
+    }
+
+    location /api/ {
+        proxy_pass http://api:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # multipart 上传（AI 自动生成的制度文档）需放开请求体上限：
+        # nginx 默认 1m，会把上传在**到达 api 之前**直接 413 拒绝，
+        # 表现为"上传大文件必然失败"且后端日志无痕。
+        #
+        # 刻意比后端 handlers.maxUploadBytes(32MiB) 略大：超限时由 api 返回
+        # 结构化 JSON 的 400（带 request_id / 中文原因），而不是 nginx 的
+        # 裸 413 HTML 页面；nginx 这一层只兜住病理级超大请求体。
+        client_max_body_size 34m;
+
+        # 开发演示身份（默认空 = 不发送该头）。见文件头"安全边界"。
+        proxy_set_header X-Odap-Dev-Tenant "${ODAP_DEV_TENANT}";
+        proxy_set_header X-Odap-Dev-Subject "${ODAP_DEV_SUBJECT}";
+        proxy_set_header X-Odap-Dev-Scopes "${ODAP_DEV_SCOPES}";
+
+        # SSE（/api/v1/stream）：关闭缓冲，否则事件被 nginx 攒着不下发。
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+        proxy_set_header Connection "";
+    }
+
+    # SPA 路由回退
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

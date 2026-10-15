@@ -1,0 +1,236 @@
+/* =============================================================================
+ * tokens.css —— ODAP 设计令牌（唯一取值来源）
+ * 权威：docs/第十七篇 §3.2 色彩 / §3.3 字体、间距与布局 / §3.4 明暗主题
+ * 约束：颜色不能成为唯一的状态表达方式（§3.2 结尾）——状态必须同时输出
+ *       颜色 + 文字 + 图标，见 components/status-badge。
+ * ========================================================================== */
+
+:root {
+  /* ---- §3.2 色彩系统（精确取值，不得自行降饱和） ---- */
+  --color-brand: #2457a7; /* 品牌主色：主操作、当前选中、链接 */
+  --color-text: #172b4d; /* 深色文字：标题、关键业务信息 */
+  --color-text-secondary: #667085; /* 次级文字：辅助说明、时间、注释 */
+  --color-bg: #f4f6f8; /* 页面背景：工作区背景 */
+  --color-surface: #ffffff; /* 卡片背景：内容面板、表格、表单 */
+  --color-success: #16803c; /* 成功：已确认完成的状态 */
+  --color-warning: #b54708; /* 警告：待复核、风险提醒 */
+  --color-error: #b42318; /* 错误：失败、拒绝、阻断 */
+  --color-info: #175cd3; /* 信息：提示、进行中、辅助状态 */
+
+  /* ---- 派生中性色（边框/分隔/悬浮） ---- */
+  --color-border: #d7dce5;
+  --color-border-strong: #b6bec9;
+  --color-surface-muted: #eef1f5;
+  --color-hover: #e7ecf3;
+  --color-focus-ring: #2457a7;
+  --color-overlay: rgba(23, 43, 77, 0.45);
+  --color-disabled-bg: #e4e8ef;
+  --color-disabled-text: #98a2b3;
+
+  /* ---- 语义浅底（用于 Badge / 提示条，文字仍取语义色保证对比度） ---- */
+  --tint-success: #e6f4ea;
+  --tint-warning: #fdf1e7;
+  --tint-error: #fdeceb;
+  --tint-info: #e8f0fe;
+  --tint-brand: #e8eef8;
+  --tint-neutral: #eef1f5;
+
+  /* ---- 语法着色（Turtle / RDF-XML 代码块内部专用）----
+     刻意不复用 --color-success / --color-error 等语义色：那些颜色在本系统里表示
+     业务状态（已确认 / 失败），代码块里一个绿色字面值如果借用了"成功"色，
+     读者会误以为它在表达状态。因此这里单列一组，取值按 GitHub 系配色，
+     明暗两套都保证与背景有足够对比。 */
+  --code-keyword: #8250df;
+  --code-prefix: #0550ae;
+  --code-iri: #0f766e;
+  --code-attr: #953800;
+  --code-string: #0a7c42;
+  --code-number: #b54708;
+  --code-comment: #6e7781;
+  --code-punct: #57606a;
+
+  /* ---- §3.3 字体：系统无衬线字体栈 ---- */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Source Han Sans SC', 'Noto Sans CJK SC',
+    Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono',
+    monospace;
+
+  /* ---- §3.3 字号：基础 14px；页面标题 24–28px；区域标题 16–18px；辅助 12–13px ---- */
+  --font-size-xs: 12px; /* 辅助文字下限（仅用于标签/时间戳，不承载关键信息） */
+  --font-size-sm: 13px; /* 辅助文字 */
+  --font-size-base: 14px; /* 基础字号 */
+  --font-size-md: 16px; /* 区域标题下限 */
+  --font-size-lg: 18px; /* 区域标题上限 */
+  --font-size-xl: 22px;
+  --font-size-title: 28px; /* 页面标题（§3.3 区间上限，提升首屏层级感） */
+  --font-size-metric: 32px; /* 指标数字：比正文显著放大以形成视觉锚点 */
+  --font-size-display: 32px;
+
+  --line-height-tight: 1.25;
+  --line-height-base: 1.5;
+  --line-height-relaxed: 1.65;
+
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  /* ---- 字距：中文长标题略收紧、小号大写标签略放开 ---- */
+  --letter-spacing-title: -0.01em;
+  --letter-spacing-caps: 0.06em;
+
+  /* ---- 图标阶梯（自研 SVG 图标集统一定义在 components/icon） ---- */
+  --icon-xs: 14px;
+  --icon-sm: 16px;
+  --icon-md: 18px;
+  --icon-lg: 20px;
+  --icon-xl: 24px;
+  --icon-stroke: 1.75;
+  --icon-stroke-dense: 1.6;
+
+  /* ---- 控件尺寸：统一 36px 基线，保证点击目标与视觉重量一致 ---- */
+  --control-height-sm: 28px;
+  --control-height: 36px;
+  --control-height-lg: 44px;
+  --nav-item-height: 38px;
+
+  /* ---- 品牌衍生色（避免散落魔法值） ---- */
+  --color-brand-hover: #1c4685;
+  --color-brand-active: #163a6b;
+  --color-on-brand: #ffffff;
+  --color-metric-ink: #0f1f3a;
+  --color-brand-gradient-end: #17396e; /* .brand-logo 渐变终点，原硬编码提取 */
+  --font-variant-numeric: tabular-nums;
+  --font-size-metric-label: 13px;
+
+  /* ---- §3.3 间距：4px 的倍数 ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ---- §3.3 圆角：输入框 6px；卡片 8–12px ---- */
+  --radius-sm: 4px;
+  --radius-input: 6px;
+  --radius-card: 8px;
+  --radius-card-lg: 12px;
+  --radius-pill: 999px;
+
+  /* ---- 阴影（克制的企业级层级，不使用发光） ---- */
+  --shadow-sm: 0 1px 2px rgba(23, 43, 77, 0.06);
+  --shadow-md: 0 2px 8px rgba(23, 43, 77, 0.1);
+  --shadow-lg: 0 8px 24px rgba(23, 43, 77, 0.16);
+  --brand-logo-shadow: 0 1px 2px rgba(23, 43, 77, 0.18);
+  --color-danger-hover: #982014;
+
+  /* ---- 布局 ---- */
+  --layout-topbar-height: 60px;
+  --layout-sidenav-width: 248px;
+  --layout-content-max: 1200px;
+  --layout-content-wide: 1600px;
+
+  /* ---- 认证页品牌面板（登录/注册左侧深色叙事区） ----
+   * 该面板本身即深色底，明暗主题下外观一致，因此只在 :root 定义一次，
+   * 不在 [data-theme="dark"] 中重复。仍集中在此，避免色值散落到 globals.css。 */
+  --auth-hero-from: #1b3f77;
+  --auth-hero-mid: #16325e;
+  --auth-hero-to: #102647;
+  --auth-hero-glow-a: rgba(88, 150, 255, 0.55);
+  --auth-hero-glow-b: rgba(58, 123, 213, 0.45);
+  --auth-hero-hairline: rgba(255, 255, 255, 0.6);
+  --auth-hero-watermark: rgba(255, 255, 255, 0.15);
+  --auth-hero-veil: rgba(255, 255, 255, 0.14);
+  --auth-hero-veil-border: rgba(255, 255, 255, 0.3);
+  --auth-hero-veil-inset: rgba(255, 255, 255, 0.22);
+  --auth-hero-tile: rgba(255, 255, 255, 0.13);
+  --auth-hero-tile-border: rgba(255, 255, 255, 0.22);
+  --auth-on-hero: #ffffff;
+  --auth-on-hero-sub: rgba(255, 255, 255, 0.7);
+  --auth-on-hero-lede: rgba(255, 255, 255, 0.82);
+  --auth-on-hero-text: rgba(255, 255, 255, 0.74);
+  --auth-on-hero-foot: rgba(255, 255, 255, 0.58);
+
+  /* ---- 动效（尊重 §12.2 减少动画设置） ---- */
+  --transition-fast: 120ms ease;
+  --transition-base: 180ms ease;
+
+  color-scheme: light; /* §3.4 默认浅色主题 */
+}
+
+/* §3.4 深色主题（V1.5 增强，现已启用）—— 通过 [data-theme="dark"] 切换
+ * 设计原则：
+ *   - 底色用深靛蓝而非纯黑，降低长时间阅读疲劳（参考 GitHub Dark / VSCode Dark+）
+ *   - 表面层级靠亮度差而非阴影区分（深色下阴影会被底色吸收）
+ *   - 品牌色适当提亮 (3a7bd5)，在深蓝底上保持足够对比度
+ *   - 语义色保持色相不变，仅调整明度以适配深底
+ */
+[data-theme='dark'] {
+  /* ---- §3.2 色彩系统 ---- */
+  --color-brand: #3a7bd5;
+  --color-text: #e6edf5;
+  --color-text-secondary: #94a3b8;
+  --color-bg: #0f172a;
+  --color-surface: #1e293b;
+  --color-success: #4ade80;
+  --color-warning: #fbbf24;
+  --color-error: #f87171;
+  --color-info: #60a5fa;
+
+  /* ---- 派生中性色 ---- */
+  --color-border: #334155;
+  --color-border-strong: #475569;
+  --color-surface-muted: #253347;
+  --color-hover: #2d3d54;
+  --color-focus-ring: #60a5fa;
+  --color-overlay: rgba(2, 6, 23, 0.65);
+  --color-disabled-bg: #1e293b;
+  --color-disabled-text: #64748b;
+
+  /* ---- 语义浅底（深色模式下转为"深底 + 低饱和强调"） ---- */
+  --tint-success: #14532d;
+  --tint-warning: #78350f;
+  --tint-error: #7f1d1d;
+  --tint-info: #1e3a8a;
+  --tint-brand: #1e3a5f;
+  --tint-neutral: #253347;
+
+  /* ---- 语法着色（明暗两套的取值见上方同名令牌的说明） ---- */
+  --code-keyword: #d2a8ff;
+  --code-prefix: #79c0ff;
+  --code-iri: #56d4dd;
+  --code-attr: #ffa657;
+  --code-string: #7ee787;
+  --code-number: #ffab70;
+  --code-comment: #8b949e;
+  --code-punct: #8b949e;
+
+  /* ---- 品牌衍生色 ---- */
+  --color-brand-hover: #4f8ddc;
+  --color-brand-active: #2d6abf;
+  --color-on-brand: #ffffff;
+  --color-metric-ink: #f1f5f9;
+  --color-brand-gradient-end: #1e3a5f;
+
+  /* ---- 阴影（深色模式下更柔和，靠透明度而非颜色） ---- */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --brand-logo-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --color-danger-hover: #dc2626;
+
+  color-scheme: dark;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --transition-fast: 0ms;
+    --transition-base: 0ms;
+  }
+}
