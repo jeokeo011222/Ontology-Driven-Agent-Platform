@@ -27,6 +27,10 @@ web/node_modules/
 .vscode/
 .DS_Store
 Thumbs.db
+.github/
+.trae/
+.workbuddy/
+docs/
 
 # Local object store (OBJECT_STORE_MODE=local)
 .odap-objectstore/
@@ -36,3 +40,6 @@ Thumbs.db
 
 # 运行期上传与本地存储（用户上传的业务文档，属于实例数据不入库）
 /var/
+
+# 浏览器自动化采集的临时截图（非产品资源；成品截图放 assets/readme/）
+/web/images/
