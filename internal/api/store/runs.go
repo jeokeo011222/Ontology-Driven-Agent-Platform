@@ -334,7 +334,10 @@ func (s *Store) ListRuns(ctx context.Context, f RunListFilter) ([]Run, string, e
                AND ($4::timestamptz IS NULL OR created_at >= $4)
                AND ($5::timestamptz IS NULL OR created_at <= $5)
                AND ($7::text = '' OR id::text ILIKE '%' || $7 || '%'
-                    OR coalesce(correlation_id, '') ILIKE '%' || $7 || '%'
+                    -- correlation_id 是 uuid 列：coalesce(uuid, '') 会让 PostgreSQL
+                    -- 把 '' 解析为 uuid 并在**计划期**报 invalid input syntax（本端点
+                    -- 因此长期 500）；必须先 ::text 再 coalesce。
+                    OR coalesce(correlation_id::text, '') ILIKE '%' || $7 || '%'
                     OR coalesce(error_summary, '') ILIKE '%' || $7 || '%')
              ORDER BY created_at DESC, id DESC
              LIMIT $6`,
