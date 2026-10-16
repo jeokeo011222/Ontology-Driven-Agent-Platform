@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -74,7 +75,7 @@ var xsdShorthand = map[string]string{
 	// 表达，而不是由 datatype 表达 —— 因此映射到 xsd:string。
 	// 契约侧（ontologyManifestSchema 的 type 枚举、本文件的错误提示、生成提示词）
 	// 都把 enum 列为合法取值，实现必须同样接受，否则就是"契约允许、装载拒绝"。
-	"enum":     "string",
+	"enum": "string",
 }
 
 // xmlnsIRI 把类型声明解析为 XSD datatype IRI。
@@ -173,12 +174,13 @@ func GraphIRI(ontologyKey, versionID string) (string, error) {
 
 // Manifest 是本体清单的强类型投影，与生成端 ontologyManifestSchema 一一对应。
 type Manifest struct {
-	Summary      string        `json:"summary"`
-	Classes      []Class       `json:"classes"`
-	Relations    []Relation    `json:"relations"`
-	Enumerations []Enumeration `json:"enumerations"`
-	Shapes       []ShapeSpec   `json:"shapes"`
-	Instances    []Instance    `json:"instances"`
+	Summary      string           `json:"summary"`
+	Classes      []Class          `json:"classes"`
+	Relations    []Relation       `json:"relations"`
+	Enumerations []Enumeration    `json:"enumerations"`
+	Shapes       []ShapeSpec      `json:"shapes"`
+	Constraints  []ConstraintSpec `json:"constraints"`
+	Instances    []Instance       `json:"instances"`
 
 	// 以下索引由 ParseManifest 建立，供闭包校验与投影复用。
 	attrIndex map[string]map[string]Attribute // class -> attribute -> 声明
@@ -245,6 +247,31 @@ type PropertySpec struct {
 	MinLength    *int     `json:"min_length"`
 	MaxLength    *int     `json:"max_length"`
 	Severity     string   `json:"severity"`
+}
+
+// ConstraintSpec 是业务硬约束（文档抽取通道，借鉴竞品 shaclConstraints 设计）。
+//
+// shapes 通道让模型自己搭形状骨架；constraints 通道让它把文档中"数值区间/枚举/
+// 长度/必填/正则"这类**可逐字验证**的业务硬约束单独列出。两条通道在 BuildShapes
+// 合并（业务优先覆盖），约束指向的类没有显式形状时自动补形状——约束绝不静默丢弃。
+//
+// 与 PropertySpec 的差异：path 按「类 + 名字」解析（ODAP 属性谓词按类限定，
+// 全局同名会歧义），且不含 datatype/class/node_kind（类型与取值形态由类声明
+// 确定性给出，模型重复声明只会引入与声明矛盾的可能）。
+type ConstraintSpec struct {
+	Class        string   `json:"class"`
+	Path         string   `json:"path"`
+	Severity     string   `json:"severity"`
+	MinCount     *int     `json:"min_count"`
+	MaxCount     *int     `json:"max_count"`
+	In           []string `json:"in"`
+	MinInclusive *float64 `json:"min_inclusive"`
+	MaxInclusive *float64 `json:"max_inclusive"`
+	MinExclusive *float64 `json:"min_exclusive"`
+	MaxExclusive *float64 `json:"max_exclusive"`
+	Pattern      string   `json:"pattern"`
+	MinLength    *int     `json:"min_length"`
+	MaxLength    *int     `json:"max_length"`
 }
 
 // Instance 是样例实例（ABox）。Properties 的取值形态由属性/关系声明决定。
@@ -384,6 +411,12 @@ func (m *Manifest) validate() error {
 		if !isLocalName(sh.ID) {
 			return jsonPointer("shapes", i, "id", fmt.Sprintf("形状 id %q 不是合法的词项局部名", sh.ID))
 		}
+		// "auto-" 前缀保留给约束派生形状（见 mergedShapeSpecs）：显式形状占用它
+		// 会与自动补建的形状在 ShapeIRI 上相撞。
+		if strings.HasPrefix(sh.ID, "auto-") {
+			return jsonPointer("shapes", i, "id",
+				fmt.Sprintf("形状 id %q 占用了保留前缀 auto-（该前缀为业务约束自动派生的形状保留），请改名", sh.ID))
+		}
 		if seenShapeID[sh.ID] {
 			return jsonPointer("shapes", i, "id", fmt.Sprintf("形状 id 重复：%s", sh.ID))
 		}
@@ -429,6 +462,104 @@ func (m *Manifest) validate() error {
 					return jsonPointer(fmt.Sprintf("shapes/%d/properties", i), j, "node_kind",
 						fmt.Sprintf("sh:nodeKind %q 不在 IRI/BlankNode/Literal 之内", p.NodeKind))
 				}
+			}
+		}
+	}
+
+	// --- 业务约束（文档抽取通道）---
+	//
+	// 这里只做**结构与可满足性**校验，不重复实现取值校验（那是 SHACL 的职责）。
+	// 但"约束本身就是不可满足的"（min>max、正则编译不过、数值区间用在字符串上）
+	// 属于结构错误：放到校验阶段才报，根因已隔了一层，排查成本高；且一条不可满足
+	// 的约束会让所有合规数据都被判违规——这比没有约束更危险。
+	for i := range m.Constraints {
+		c := &m.Constraints[i]
+		c.Class = strings.TrimSpace(c.Class)
+		c.Path = strings.TrimSpace(c.Path)
+		if c.Class == "" {
+			return jsonPointer("constraints", i, "class", "class 必填（约束必须指明挂在哪个类上）")
+		}
+		if _, ok := m.attrIndex[c.Class]; !ok {
+			return jsonPointer("constraints", i, "class", fmt.Sprintf("class 未在 classes 中定义：%s", c.Class))
+		}
+		ref, err := m.ResolveTerm(c.Class, c.Path)
+		if err != nil {
+			return jsonPointer(fmt.Sprintf("constraints/%d", i), -1, "path", err.Error())
+		}
+		if _, err := parseSeverity(c.Severity, "Violation"); err != nil {
+			return jsonPointer(fmt.Sprintf("constraints/%d", i), -1, "severity", err.Error())
+		}
+		if c.MinCount != nil && c.MaxCount != nil && *c.MinCount > *c.MaxCount {
+			return jsonPointer(fmt.Sprintf("constraints/%d", i), -1, "min_count",
+				fmt.Sprintf("min_count=%d 大于 max_count=%d：约束不可满足", *c.MinCount, *c.MaxCount))
+		}
+		if c.MinLength != nil && c.MaxLength != nil && *c.MinLength > *c.MaxLength {
+			return jsonPointer(fmt.Sprintf("constraints/%d", i), -1, "min_length",
+				fmt.Sprintf("min_length=%d 大于 max_length=%d：约束不可满足", *c.MinLength, *c.MaxLength))
+		}
+		if c.MinInclusive != nil && c.MaxInclusive != nil && *c.MinInclusive > *c.MaxInclusive {
+			return jsonPointer(fmt.Sprintf("constraints/%d", i), -1, "min_inclusive",
+				fmt.Sprintf("min_inclusive=%v 大于 max_inclusive=%v：区间为空，约束不可满足",
+					*c.MinInclusive, *c.MaxInclusive))
+		}
+		if c.MinExclusive != nil && c.MaxExclusive != nil && *c.MinExclusive >= *c.MaxExclusive {
+			return jsonPointer(fmt.Sprintf("constraints/%d", i), -1, "min_exclusive",
+				fmt.Sprintf("min_exclusive=%v 不小于 max_exclusive=%v：开区间为空，约束不可满足",
+					*c.MinExclusive, *c.MaxExclusive))
+		}
+		if c.Pattern != "" {
+			if _, err := regexp.Compile(c.Pattern); err != nil {
+				return jsonPointer(fmt.Sprintf("constraints/%d", i), -1, "pattern",
+					fmt.Sprintf("pattern %q 不是合法正则：%v", c.Pattern, err))
+			}
+		}
+		if len(c.In) == 1 && c.In[0] == "" {
+			return jsonPointer(fmt.Sprintf("constraints/%d", i), -1, "in", "in 的取值不能是空字符串")
+		}
+		for _, v := range c.In {
+			if strings.TrimSpace(v) == "" {
+				return jsonPointer(fmt.Sprintf("constraints/%d", i), -1, "in", "in 的取值不能是空白字符串")
+			}
+		}
+
+		// 类型相容矩阵：约束种类必须与目标槽位的声明类型相容。
+		// 数值区间作用在文本上、正则作用在数值上，都会造出"永远违规"或"永远不触发"
+		// 的约束——两者都是静默失败，必须在解析期拦下。
+		field := fmt.Sprintf("constraints/%d", i)
+		if !ref.IsRelation {
+			attrType := m.attrIndex[c.Class][ref.Name].Type
+			switch attrType {
+			case "number", "integer":
+				if c.Pattern != "" {
+					return jsonPointer(field, -1, "pattern",
+						fmt.Sprintf("pattern 只能用于文本属性，但 %s.%s 的类型是 %s（数值请用 min_inclusive/max_inclusive）", c.Class, ref.Name, attrType))
+				}
+				if c.MinLength != nil || c.MaxLength != nil {
+					return jsonPointer(field, -1, "min_length",
+						fmt.Sprintf("长度约束只能用于文本属性，但 %s.%s 的类型是 %s", c.Class, ref.Name, attrType))
+				}
+				if len(c.In) > 0 {
+					return jsonPointer(field, -1, "in",
+						fmt.Sprintf("in（文本枚举）不能用于数值属性 %s.%s（数值请用 min_inclusive/max_inclusive）", c.Class, ref.Name))
+				}
+			case "boolean":
+				if c.Pattern != "" || c.MinLength != nil || c.MaxLength != nil || len(c.In) > 0 ||
+					c.MinInclusive != nil || c.MaxInclusive != nil || c.MinExclusive != nil || c.MaxExclusive != nil {
+					return jsonPointer(field, -1, "path",
+						fmt.Sprintf("布尔属性 %s.%s 只接受 min_count/max_count 约束", c.Class, ref.Name))
+				}
+			default: // string / enum / date / datetime
+				if c.MinInclusive != nil || c.MaxInclusive != nil || c.MinExclusive != nil || c.MaxExclusive != nil {
+					return jsonPointer(field, -1, "min_inclusive",
+						fmt.Sprintf("数值区间只能用于 number/integer 属性，但 %s.%s 的类型是 %s", c.Class, ref.Name, attrType))
+				}
+			}
+		} else {
+			// 关系槽位：class/node_kind 由关系声明确定性给出，约束只允许管出现次数。
+			if c.Pattern != "" || c.MinLength != nil || c.MaxLength != nil || len(c.In) > 0 ||
+				c.MinInclusive != nil || c.MaxInclusive != nil || c.MinExclusive != nil || c.MaxExclusive != nil {
+				return jsonPointer(field, -1, "path",
+					fmt.Sprintf("关系 %s 只接受 min_count/max_count 约束（取值形态由 relations 声明决定）", ref.Name))
 			}
 		}
 	}
@@ -772,12 +903,15 @@ func (m *Manifest) ABox(ns Namespace) ([]graphstore.Triple, error) {
 
 // BuildShapes 把清单里的形状投影为 SHACL 形状。
 //
-// Keywords 如实列出**实际设置了值**的关键字：shacl.Validate 对清单外关键字
-// fail-closed 拒绝，若这里凭空多列会误拒，漏列则会让门禁形同虚设。
+// 投影前先把业务约束（constraints 通道）合并进形状清单：业务字段优先覆盖显式形状
+// 的同名字段，约束指向的类没有显式形状时自动补一个。Keywords 如实列出**实际设置
+// 了值**的关键字：shacl.Validate 对清单外关键字 fail-closed 拒绝，若这里凭空多列会
+// 误拒，漏列则会让门禁形同虚设。
 func (m *Manifest) BuildShapes(ns Namespace) ([]shacl.Shape, error) {
-	out := make([]shacl.Shape, 0, len(m.Shapes))
-	for i := range m.Shapes {
-		spec := &m.Shapes[i]
+	specs := m.mergedShapeSpecs()
+	out := make([]shacl.Shape, 0, len(specs))
+	for i := range specs {
+		spec := &specs[i]
 		sev, err := parseSeverity(spec.Severity, shacl.SeverityViolation)
 		if err != nil {
 			return nil, err
@@ -798,6 +932,115 @@ func (m *Manifest) BuildShapes(ns Namespace) ([]shacl.Shape, error) {
 		out = append(out, sh)
 	}
 	return out, nil
+}
+
+// mergedShapeSpecs 把业务约束合并进形状清单，返回合并后的规格副本。
+//
+// 副本语义刻意明确：绝不改写 m.Shapes 原始声明——合并是投影期的派生行为，
+// 原始清单（落库的那份字节）必须保持模型产出的原样，否则"重新校验"会拿到
+// 一份被上一次投影污染过的清单。
+//
+// 约束合并规则（借鉴竞品双通道设计，取其长、补其短）：
+//   - 同类同路径：业务约束的**非空字段**覆盖显式形状的同名字段（业务约束来自
+//     文档逐字抽取，比模型自己搭的骨架更贴近原意）；
+//   - 同类不同路径：约束作为新的属性形状追加；
+//   - 该类没有显式形状：自动补一个（ID 用保留前缀 auto-，validate 已禁止显式
+//     形状占用）。约束绝不因"没有形状可挂"而静默丢失。
+func (m *Manifest) mergedShapeSpecs() []ShapeSpec {
+	specs := make([]ShapeSpec, len(m.Shapes))
+	copy(specs, m.Shapes)
+	byClass := make(map[string]int, len(specs))
+	for i := range specs {
+		byClass[specs[i].TargetClass] = i
+	}
+	for i := range m.Constraints {
+		c := &m.Constraints[i]
+		ps := PropertySpec{
+			Path:         c.Path,
+			MinCount:     c.MinCount,
+			MaxCount:     c.MaxCount,
+			In:           c.In,
+			MinInclusive: c.MinInclusive,
+			MaxInclusive: c.MaxInclusive,
+			MinExclusive: c.MinExclusive,
+			MaxExclusive: c.MaxExclusive,
+			Pattern:      c.Pattern,
+			MinLength:    c.MinLength,
+			MaxLength:    c.MaxLength,
+			Severity:     c.Severity,
+		}
+		idx, ok := byClass[c.Class]
+		if !ok {
+			idx = len(specs)
+			specs = append(specs, ShapeSpec{
+				ID:          "auto-" + c.Class,
+				TargetClass: c.Class,
+				Severity:    "Violation",
+			})
+			byClass[c.Class] = idx
+		}
+		merged := false
+		props := specs[idx].Properties
+		for j := range props {
+			if props[j].Path == c.Path {
+				props[j] = mergePropertySpec(props[j], ps)
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			props = append(props, ps)
+		}
+		specs[idx].Properties = props
+	}
+	return specs
+}
+
+// mergePropertySpec 用约束（over）的非空字段覆盖显式形状（base）。
+func mergePropertySpec(base, over PropertySpec) PropertySpec {
+	if over.MinCount != nil {
+		base.MinCount = over.MinCount
+	}
+	if over.MaxCount != nil {
+		base.MaxCount = over.MaxCount
+	}
+	if over.Datatype != "" {
+		base.Datatype = over.Datatype
+	}
+	if over.Class != "" {
+		base.Class = over.Class
+	}
+	if over.NodeKind != "" {
+		base.NodeKind = over.NodeKind
+	}
+	if len(over.In) > 0 {
+		base.In = over.In
+	}
+	if over.MinInclusive != nil {
+		base.MinInclusive = over.MinInclusive
+	}
+	if over.MaxInclusive != nil {
+		base.MaxInclusive = over.MaxInclusive
+	}
+	if over.MinExclusive != nil {
+		base.MinExclusive = over.MinExclusive
+	}
+	if over.MaxExclusive != nil {
+		base.MaxExclusive = over.MaxExclusive
+	}
+	if over.Pattern != "" {
+		base.Pattern = over.Pattern
+	}
+	if over.MinLength != nil {
+		base.MinLength = over.MinLength
+	}
+	if over.MaxLength != nil {
+		base.MaxLength = over.MaxLength
+	}
+	if over.Severity != "" {
+		base.Severity = over.Severity
+	}
+	return base
 }
 
 // propertyShape 投影单个属性形状。
@@ -891,16 +1134,25 @@ func (m *Manifest) propertyShape(ns Namespace, targetClass string, spec *Propert
 }
 
 // TargetClassIRIs 返回全部形状的目标类 IRI（去重）。反假绿探针用它确定"应该有多少实例"。
+// 业务约束自动派生的形状（constraints 通道）同样是可执行约束，其目标类一并计入——
+// 漏掉会让"约束只挂在约束通道的类上"的本体被探针误判为 0 实例。
 func (m *Manifest) TargetClassIRIs(ns Namespace) []string {
-	seen := make(map[string]bool, len(m.Shapes))
-	out := make([]string, 0, len(m.Shapes))
-	for _, sh := range m.Shapes {
-		iri := ns.ClassIRI(sh.TargetClass)
+	seen := make(map[string]bool, len(m.Shapes)+len(m.Constraints))
+	out := make([]string, 0, len(m.Shapes)+len(m.Constraints))
+	add := func(class string) {
+		iri := ns.ClassIRI(class)
 		if seen[iri] {
-			continue
+			return
 		}
 		seen[iri] = true
 		out = append(out, iri)
+	}
+	// 按声明顺序输出（先形状后约束）：调用方（探针/诊断）拿到稳定序列，便于对比。
+	for _, sh := range m.Shapes {
+		add(sh.TargetClass)
+	}
+	for _, c := range m.Constraints {
+		add(c.Class)
 	}
 	return out
 }

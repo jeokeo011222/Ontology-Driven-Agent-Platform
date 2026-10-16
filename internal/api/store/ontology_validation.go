@@ -87,6 +87,52 @@ func (s *Store) OntologyVersionSnapshot(ctx context.Context, ontologyID ids.ID) 
 	return out, nil
 }
 
+// OntologyVersionSnapshotByVersionID 与 OntologyVersionSnapshot 同构，但按
+// **版本 id**（v.id = $1）精确定位。推理运行（POST /reasoning/runs）的入参是
+// ontology_version_id：必须钉住传入的那个版本，绝不允许"传版本 id 却被解析成
+// 该本体最新版"的口径漂移——用户对着详情页选中的版本跑推理，结果却作用在
+// 另一个版本上是不可接受的静默偷换。
+func (s *Store) OntologyVersionSnapshotByVersionID(ctx context.Context, versionID ids.ID) (*OntologyVersionSnapshot, error) {
+	if versionID.IsZero() {
+		return nil, errors.E(errors.CodeInvalidArgument, "ontology_version_id 不合法")
+	}
+	var out *OntologyVersionSnapshot
+	err := s.TenantTx(ctx, func(tx pgx.Tx) error {
+		rows, err := queryMaps(ctx, tx, `
+            SELECT o.id::text AS ontology_id, o.ontology_key, o.name,
+                   v.id::text AS version_id, v.version, v.status,
+                   v.manifest::text AS manifest
+              FROM ontology.ontology_versions v
+              JOIN ontology.ontologies o ON o.id = v.ontology_id
+             WHERE v.id = $1
+             LIMIT 1`, versionID.String())
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return errors.E(errors.CodeNotFound, "本体版本不存在")
+		}
+		row := rows[0]
+		rec := &OntologyVersionSnapshot{
+			OntologyID:  asString(row["ontology_id"]),
+			OntologyKey: asString(row["ontology_key"]),
+			Name:        asString(row["name"]),
+			VersionID:   asString(row["version_id"]),
+			Version:     asString(row["version"]),
+			Status:      asString(row["status"]),
+		}
+		if raw := asString(row["manifest"]); raw != "" {
+			rec.Manifest = json.RawMessage(raw)
+		}
+		out = rec
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 // 写：校验进行中的可见状态
 // ---------------------------------------------------------------------------

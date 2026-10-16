@@ -544,6 +544,7 @@ export interface OntologyArtifacts {
     tbox_triples: number;
     abox_triples: number;
     shapes: number;
+    constraints: number;
     target_classes: number;
     instances: number;
   };

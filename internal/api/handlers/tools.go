@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	stderrors "errors"
 	"io"
@@ -122,11 +123,46 @@ type invokeToolRequest struct {
 	Args map[string]any `json:"args"`
 }
 
+// InvocableToolRecord 经 registry.CatalogService 解析工具的**最新已发布版本**，
+// 并适配为执行器所需的 ToolVersionRecord（导出给 worker 步进执行器复用）。
+//
+// 版本解析的真值来源是 registry 包（目录域），不再是 store 的直查 SQL——
+// 两套解析并存曾让"取最新"与"取最新已发布"两种语义各写一份，其中一份
+// 会被工具自己的 DRAFT 版本挡住可用的 PUBLISHED 版本（已在 resolver 修复）。
+func (h *Handler) InvocableToolRecord(ctx context.Context, tenantID ids.ID, toolID ids.ID) (*store.ToolVersionRecord, error) {
+	if h.deps.Catalog == nil {
+		return nil, unavailable("工具目录解析器未装配（registry.CatalogService）")
+	}
+	inv, err := h.deps.Catalog.ResolveLatestPublishedTool(ctx, tenantID, toolID)
+	if err != nil {
+		return nil, err
+	}
+	rec := &store.ToolVersionRecord{
+		ToolID:      toolID.String(),
+		ToolKey:     inv.Tool.ToolKey,
+		VersionID:   inv.Version.ID.String(),
+		Version:     inv.Version.Version,
+		EffectClass: inv.Version.EffectClass,
+		Status:      inv.Version.Status,
+	}
+	if len(inv.Version.InputSchema) > 0 {
+		rec.InputSchema = json.RawMessage(inv.Version.InputSchema)
+	}
+	if len(inv.Version.OutputSchema) > 0 {
+		rec.OutputSchema = json.RawMessage(inv.Version.OutputSchema)
+	}
+	if len(inv.Version.ExecutionConfig) > 0 {
+		rec.ExecutionConfig = json.RawMessage(inv.Version.ExecutionConfig)
+	}
+	return rec, nil
+}
+
 // InvokeTool 处理 POST /api/v1/tools/{id}/invoke —— 工具测试调用的真实执行链。
 //
 // 效果类别决定流程（fail-closed：无审批不落外部系统）：
 //   - READ / INTERNAL_WRITE：参数校验 → 建调用记录（EXECUTING）→ 真实执行器 →
 //     CAS 推进 SUCCEEDED / FAILED → 审计+SSE，返回 200 + 调用记录（含真实输出）。
+//     READ 类先查结果缓存（TTL 内同参直接复用，调用记录照常落库、审计标注 cache_hit）。
 //   - EXTERNAL_WRITE：参数校验 → 建调用记录（PENDING_APPROVAL）→ 审计+SSE，
 //     返回 202 + 调用 id；真实执行只发生在 POST .../invocations/{inv}/approve
 //     确认链路（带 CAS 状态守卫，绝不重复执行）。
@@ -153,15 +189,11 @@ func (h *Handler) InvokeTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	echoIdempotency(w, r)
-	rec, err := h.deps.Store.LatestToolVersion(r.Context(), toolID)
+	rec, err := h.InvocableToolRecord(r.Context(), id.TenantID, toolID)
 	if err != nil {
-		h.fail(w, r, err)
-		return
-	}
-	if rec.Status != "" && rec.Status != "PUBLISHED" {
 		h.recordAudit(r, id, "ToolInvokeRejected", "tool.invoke", "DENIED", "tool", toolID.String(), ids.ID{},
-			map[string]any{"tool_key": rec.ToolKey, "reason": "version_not_published", "status": rec.Status})
-		h.fail(w, r, errors.Ef(errors.CodeConflict, "工具版本状态为 %s（仅 PUBLISHED 可调用）", rec.Status))
+			map[string]any{"reason": "resolve_failed", "detail": clip(err.Error(), 200)})
+		h.fail(w, r, err)
 		return
 	}
 	if err := tools.ValidateArgs(rec.InputSchema, req.Args); err != nil {
@@ -213,7 +245,21 @@ func (h *Handler) InvokeTool(w http.ResponseWriter, r *http.Request) {
 	h.recordAudit(r, id, "ToolInvocationStarted", "tool.invoke", "SUCCESS", "tool", toolID.String(), ids.ID{},
 		map[string]any{"tool_key": rec.ToolKey, "invocation_id": invID})
 
-	out, execErr := h.executeToolInvocation(r, id, rec, invID, req.Args)
+	// READ 类先查只读结果缓存：命中时跳过真实执行（调用记录照常推进到
+	// SUCCEEDED，耗时接近 0 是命中缓存的真实表现，审计标注 cache_hit）。
+	var (
+		out      map[string]any
+		execErr  error
+		cacheHit bool
+	)
+	if rec.EffectClass == "READ" {
+		if cached, ok := h.deps.ToolCache.Get(rec.ToolKey, rec.Version, req.Args); ok {
+			out, cacheHit = cached, true
+		}
+	}
+	if !cacheHit {
+		out, execErr = h.ExecuteToolInvocation(r.Context(), id, rec, invID, req.Args)
+	}
 	if execErr != nil {
 		code, summary := errorCodeParts(execErr)
 		updated, terr := h.deps.Store.TransitionToolInvocation(r.Context(), store.TransitionToolInvocationInput{
@@ -232,6 +278,16 @@ func (h *Handler) InvokeTool(w http.ResponseWriter, r *http.Request) {
 		h.writeJSON(w, http.StatusOK, map[string]any{"invocation": updated})
 		return
 	}
+	// 成功后维护缓存：READ 放入；INTERNAL_WRITE 整体失效（外部/内部状态可能
+	// 已被本次写入改变，粗粒度失效是唯一不漏的选择）。
+	if h.deps.ToolCache != nil {
+		switch rec.EffectClass {
+		case "READ":
+			h.deps.ToolCache.Put(rec.ToolKey, rec.Version, req.Args, out)
+		case "INTERNAL_WRITE":
+			h.deps.ToolCache.InvalidateAll()
+		}
+	}
 	outJSON, _ := json.Marshal(out)
 	updated, terr := h.deps.Store.TransitionToolInvocation(r.Context(), store.TransitionToolInvocationInput{
 		InvID: invIDParsed, From: store.InvocationExecuting, To: store.InvocationSucceeded,
@@ -242,9 +298,9 @@ func (h *Handler) InvokeTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.recordAudit(r, id, "ToolInvocationSucceeded", "tool.invoke", "SUCCESS", "tool", toolID.String(), ids.ID{},
-		map[string]any{"tool_key": rec.ToolKey, "invocation_id": invID})
+		map[string]any{"tool_key": rec.ToolKey, "invocation_id": invID, "cache_hit": cacheHit})
 	h.publish(id.TenantID.String(), "ToolInvocationUpdated", sse.Important,
-		map[string]any{"invocation_id": invID, "tool_id": toolID.String(), "status": store.InvocationSucceeded})
+		map[string]any{"invocation_id": invID, "tool_id": toolID.String(), "status": store.InvocationSucceeded, "cache_hit": cacheHit})
 	h.writeJSON(w, http.StatusOK, map[string]any{"invocation": updated})
 }
 
@@ -338,7 +394,7 @@ func (h *Handler) decideToolInvocation(w http.ResponseWriter, r *http.Request, a
 			"调用记录状态为 %s（仅 PENDING_APPROVAL 可审批），已被他人处理", status))
 		return
 	}
-	rec, err := h.deps.Store.LatestToolVersion(r.Context(), toolID)
+	rec, err := h.InvocableToolRecord(r.Context(), id.TenantID, toolID)
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -396,7 +452,7 @@ func (h *Handler) decideToolInvocation(w http.ResponseWriter, r *http.Request, a
 	args["__approval_id"] = invID.String()
 	args["__authorization_decision_id"] = "manual-approve:" + id.SubjectID.String()
 
-	out, execErr := h.executeToolInvocation(r, id, rec, invID.String(), args)
+	out, execErr := h.ExecuteToolInvocation(r.Context(), id, rec, invID.String(), args)
 	if execErr != nil {
 		code, summary := errorCodeParts(execErr)
 		updated, terr := h.deps.Store.TransitionToolInvocation(r.Context(), store.TransitionToolInvocationInput{
@@ -415,6 +471,11 @@ func (h *Handler) decideToolInvocation(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 	outJSON, _ := json.Marshal(out)
+	// EXTERNAL_WRITE 执行成功：整体失效只读缓存（写入可能已改变外部/内部状态，
+	// 任何 READ 工具的旧结果都不再可信）。
+	if h.deps.ToolCache != nil {
+		h.deps.ToolCache.InvalidateAll()
+	}
 	updated, terr := h.deps.Store.TransitionToolInvocation(r.Context(), store.TransitionToolInvocationInput{
 		InvID: invID, From: store.InvocationExecuting, To: store.InvocationSucceeded,
 		Output: outJSON, FinishClock: true,

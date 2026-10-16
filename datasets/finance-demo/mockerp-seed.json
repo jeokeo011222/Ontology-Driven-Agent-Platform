@@ -1,0 +1,58 @@
+[
+  {
+    "object_type": "ExpenseClaim",
+    "object_id": "EXP-2026-001",
+    "status": "SUBMITTED",
+    "version": 1,
+    "attributes": {
+      "expense_id": "EXP-2026-001",
+      "title": "华东区客户走访差旅报销",
+      "employee_name": "张伟",
+      "department": "销售一部",
+      "cost_center": "CC-SALES-01",
+      "category": "差旅费",
+      "amount": 4860.0,
+      "currency": "CNY",
+      "vendor_name": "杭州商联差旅服务有限公司",
+      "submitted_on": "2026-10-10",
+      "description": "10 月 13 日-15 日上海/苏州客户走访：高铁往返 1220 元、住宿 2 晚 2640 元、市内交通 1000 元"
+    },
+    "created_at": "2026-10-10T09:30:00+08:00",
+    "updated_at": "2026-10-10T09:30:00+08:00"
+  },
+  {
+    "object_type": "ExpenseClaim",
+    "object_id": "EXP-2026-002",
+    "status": "SUBMITTED",
+    "version": 1,
+    "attributes": {
+      "expense_id": "EXP-2026-002",
+      "title": "三季度客户答谢晚宴",
+      "employee_name": "李娜",
+      "department": "市场部",
+      "cost_center": "CC-MKT-01",
+      "category": "业务招待费",
+      "amount": 12800.0,
+      "currency": "CNY",
+      "vendor_name": "杭州湖畔宴会中心",
+      "submitted_on": "2026-10-12",
+      "description": "三季度重点客户答谢晚宴 2 桌，含酒水与服务费"
+    },
+    "created_at": "2026-10-12T14:05:00+08:00",
+    "updated_at": "2026-10-12T14:05:00+08:00"
+  },
+  {
+    "object_type": "Vendor",
+    "object_id": "V-2026-001",
+    "version": 1,
+    "attributes": {
+      "vendor_id": "V-2026-001",
+      "vendor_name": "杭州商联差旅服务有限公司",
+      "tax_id": "91330106MA2H35779X",
+      "risk_level": "LOW",
+      "blacklisted": false
+    },
+    "created_at": "2026-01-15T10:00:00+08:00",
+    "updated_at": "2026-01-15T10:00:00+08:00"
+  }
+]

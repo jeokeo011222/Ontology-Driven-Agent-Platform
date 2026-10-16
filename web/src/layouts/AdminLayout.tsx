@@ -44,10 +44,13 @@ const NAV_GROUPS: SidenavGroup[] = [
       // 「企业本体」页面内已并入「业务领域分类」分区（页内页签），
       // 故此处不再有独立的分类导航项。
       { to: '/admin/ontologies', label: '企业本体', icon: 'ontology' },
+      { to: '/admin/knowledge', label: '知识库', icon: 'fileText' },
+      { to: '/admin/reasoning', label: '推理引擎', icon: 'arrowLeftRight' },
       { to: '/admin/agents', label: 'Agent 管理', icon: 'bot' },
       { to: '/admin/skills', label: '技能管理', icon: 'sparkles' },
       { to: '/admin/tools', label: '工具管理', icon: 'wrench' },
       { to: '/admin/workflows', label: '工作流与 Harness', icon: 'workflow' },
+      { to: '/admin/a2a', label: 'A2A 协同', icon: 'send' },
     ],
   },
   {
@@ -66,6 +69,7 @@ const NAV_GROUPS: SidenavGroup[] = [
       { to: '/admin/policies', label: '策略与审批', icon: 'scale' },
       { to: '/admin/monitoring', label: '运行监控', icon: 'activity' },
       { to: '/admin/audit', label: '审计与证据', icon: 'fileSearch' },
+      { to: '/admin/actions', label: '动作管理', icon: 'history' },
       { to: '/admin/evaluation', label: '评估与质量门禁', icon: 'clipboardCheck' },
       { to: '/admin/releases', label: '插件与版本发布', icon: 'package' },
     ],

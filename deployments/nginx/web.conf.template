@@ -76,6 +76,22 @@ server {
         proxy_set_header Connection "";
     }
 
+    # A2A 协议标准路径（Agent Card）：GET /.well-known/agent.json。
+    # 认证沿用后端认证链（Bearer Token / 会话 Cookie 由前端请求自带），
+    # nginx 只做反代转发，不参与鉴权。
+    location /.well-known/ {
+        proxy_pass http://api:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header X-Odap-Dev-Tenant "${ODAP_DEV_TENANT}";
+        proxy_set_header X-Odap-Dev-Subject "${ODAP_DEV_SUBJECT}";
+        proxy_set_header X-Odap-Dev-Scopes "${ODAP_DEV_SCOPES}";
+    }
+
     # SPA 路由回退
     location / {
         try_files $uri $uri/ /index.html;

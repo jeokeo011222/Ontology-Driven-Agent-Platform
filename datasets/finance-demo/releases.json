@@ -1,0 +1,37 @@
+[
+  {
+    "id": "a0000001-0000-4000-8000-000000000001",
+    "artifact_type": "AGENT",
+    "artifact_id": "77777777-7777-4777-8777-777777777777",
+    "version": "1.0.0",
+    "state": "candidate",
+    "gate_state": "passed",
+    "environment": "staging"
+  },
+  {
+    "id": "a0000001-0000-4000-8000-000000000002",
+    "artifact_type": "AGENT",
+    "artifact_id": "c0000001-0000-4000-8000-000000000001",
+    "version": "1.0.0",
+    "state": "candidate",
+    "gate_state": "failed"
+  },
+  {
+    "id": "a0000001-0000-4000-8000-000000000003",
+    "artifact_type": "AGENT",
+    "artifact_id": "c0000002-0000-4000-8000-000000000002",
+    "version": "1.0.0",
+    "state": "promoted",
+    "gate_state": "passed",
+    "environment": "production"
+  },
+  {
+    "id": "a0000001-0000-4000-8000-000000000004",
+    "artifact_type": "ONTOLOGY",
+    "artifact_id": "f0000000-0000-4000-8000-000000000001",
+    "version": "1.0.0",
+    "state": "rolled_back",
+    "gate_state": "passed",
+    "environment": "production"
+  }
+]

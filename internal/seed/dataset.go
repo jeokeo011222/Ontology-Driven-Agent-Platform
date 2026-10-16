@@ -24,17 +24,19 @@ type Dataset struct {
 	Version     string `json:"version"`
 	Description string `json:"description,omitempty"`
 
-	Tenant      Tenant       `json:"tenant"`
-	Ontologies  []Ontology   `json:"ontologies,omitempty"`
-	Agents      []Agent      `json:"agents,omitempty"`
-	Tools       []Tool       `json:"tools,omitempty"`
-	Workflows   []Workflow   `json:"workflows,omitempty"`
-	Providers   []Provider   `json:"providers,omitempty"`
-	Policies    []Policy     `json:"policies,omitempty"`
-	Graphs      []NamedGraph `json:"graphs,omitempty"`
-	Evaluations []Evaluation `json:"evaluations,omitempty"`
-	Plans       []Plan       `json:"plans,omitempty"`
-	Runs        []Run        `json:"runs,omitempty"`
+	Tenant      Tenant        `json:"tenant"`
+	Ontologies  []Ontology    `json:"ontologies,omitempty"`
+	Agents      []Agent       `json:"agents,omitempty"`
+	Tools       []Tool        `json:"tools,omitempty"`
+	Skills      []Skill       `json:"skills,omitempty"`
+	Workflows   []Workflow    `json:"workflows,omitempty"`
+	Providers   []Provider    `json:"providers,omitempty"`
+	Policies    []Policy      `json:"policies,omitempty"`
+	Graphs      []NamedGraph  `json:"graphs,omitempty"`
+	Evaluations []Evaluation  `json:"evaluations,omitempty"`
+	Plans       []Plan        `json:"plans,omitempty"`
+	Runs        []Run         `json:"runs,omitempty"`
+	Releases    []ReleaseSeed `json:"releases,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -216,6 +218,31 @@ type ToolVersion struct {
 	Capabilities    []string        `json:"capabilities,omitempty"`
 	EffectClass     string          `json:"effect_class"`
 	ExecutionConfig json.RawMessage `json:"execution_config,omitempty"`
+}
+
+// Skill 是技能定义（registry.skills）及其首个版本。
+// 技能是"提示词片段 + 工具绑定"的可复用能力包，运行期经
+// dependency_manifest.skills → agent.CompileSkills 展开进系统提示词。
+type Skill struct {
+	ID          string `json:"id"`
+	SkillKey    string `json:"skill_key"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Domain      string `json:"domain,omitempty"`
+	// Builtin 标记平台内置技能：不可编辑/删除（PATCH/DELETE 一律 409）。
+	Builtin bool         `json:"is_builtin,omitempty"`
+	Version SkillVersion `json:"version"`
+}
+
+// SkillVersion 是技能版本（registry.skill_versions）。
+type SkillVersion struct {
+	ID             string          `json:"id"`
+	Version        string          `json:"version"`
+	Status         string          `json:"status"`
+	PromptFragment string          `json:"prompt_fragment"`
+	ToolBindings   []string        `json:"tool_bindings,omitempty"`
+	InputSchema    json.RawMessage `json:"input_schema,omitempty"`
+	OutputSchema   json.RawMessage `json:"output_schema,omitempty"`
 }
 
 // Workflow 是工作流定义（registry.workflows）及其首个版本。
@@ -405,4 +432,16 @@ type Run struct {
 	CorrelationID  string          `json:"correlation_id,omitempty"`
 	Priority       int             `json:"priority,omitempty"`
 	MaxAttempts    int             `json:"max_attempts,omitempty"`
+}
+
+// ReleaseSeed 是发布实体（release_mgmt.releases，迁移 000040）。
+// artifact_id 引用本数据集内已声明的插件/本体 id（拒绝悬空引用，由 Validate 校验）。
+type ReleaseSeed struct {
+	ID           string `json:"id"`
+	ArtifactType string `json:"artifact_type"`
+	ArtifactID   string `json:"artifact_id"`
+	Version      string `json:"version"`
+	State        string `json:"state"`
+	GateState    string `json:"gate_state"`
+	Environment  string `json:"environment,omitempty"`
 }

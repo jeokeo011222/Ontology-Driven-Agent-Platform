@@ -40,15 +40,12 @@ var danglingAllowlist = map[string]string{
 		"后者尚未接线，本包因此也不可达",
 
 	// ── 执行侧：等待 worker 步进执行器（评测清单 L7）──
-	"internal/agent": "Agent Runtime 已实现且测试就绪；cmd/worker 目前只做 " +
-		"ClaimNext / Machine.Apply / Publisher，没有步进执行器调用它",
-	"internal/evidence":        "证据包构建与完整性验证已实现；尚无端点或 Worker 步骤创建证据包",
+	// internal/agent 与 internal/evidence 已于 2026-10-16 接线（cmd/worker 步进执行器），
+	// 从本表移除；inbox/lease 仍待接线。
 	"internal/execution/inbox": "消费者幂等（Inbox 模式）已实现；尚无消费方循环接入",
 	"internal/execution/lease": "任务租约的纯领域判定已实现，但生产路径使用的是 " +
 		"harness.Scheduler 内的条件 UPDATE 实现——两份实现并存，应择一（让 harness 复用本包判定）；" +
 		"在此之前不得再新增第三份",
-	"internal/registry": "插件 / Agent / Tool 清单解析已实现；生产路径改用 api/store 的直查 SQL，" +
-		"两者并存待统一",
 }
 
 // productionEdges 解析**生产代码**（排除 _test.go）的 odap 内部依赖边。
@@ -125,7 +122,9 @@ func internalProductionPackages(t *testing.T) []string {
 			return err
 		}
 		if d.IsDir() {
-			if strings.HasPrefix(d.Name(), ".") {
+			// testdata 是 Go 工具链约定的"永不 import"目录（编译器直接忽略），
+			// 其中的 .go 文件是给测试用的编译夹具，不是生产代码——按惯例整目录跳过。
+			if strings.HasPrefix(d.Name(), ".") || d.Name() == "testdata" {
 				return filepath.SkipDir
 			}
 			return nil

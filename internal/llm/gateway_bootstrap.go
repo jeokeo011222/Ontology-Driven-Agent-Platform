@@ -1,4 +1,4 @@
-package main
+package llm
 
 import (
 	"context"
@@ -7,33 +7,34 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"odap/internal/llm"
 	"odap/internal/platform/clock"
 	"odap/internal/platform/secretbox"
 )
 
-// buildGenerationGateway 装配"生成类端点"专用的模型网关。
+// BuildGenerationGateway 装配"生成/执行类调用"专用的模型网关——cmd/api（生成端点）
+// 与 cmd/worker（步进执行器）共用的唯一装配实现。
 //
 // 与 llm-check 的差别只有一处，但这一处是硬约束：**只接受真实 HTTP 端点**。
-// MOCK 端点在装配前被显式剔除，避免本体/Agent/工具/工作流的自动生成落到
+// MOCK 端点在装配前被显式剔除，避免本体/Agent/工具的自动生成与 Run 步进执行落到
 // 回放式 MockProvider 上，产出看起来像真的、实际是回放的伪造内容
 // （项目硬约束：严禁 mock 数据、严禁静默降级）。
 //
-// 没有任何可用 HTTP 端点时返回 nil：调用方据此 fail-closed，
-// 生成端点会以 UNAVAILABLE 明确说明原因，而不是"生成成功"却写进假数据。
-func buildGenerationGateway(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger,
-	secrets *secretbox.Cipher) *llm.Gateway {
-	loader := &llm.RegistryLoader{Pool: pool}
+// 没有任何可用 HTTP 端点时返回 nil：调用方据此 fail-closed
+// （生成端点返回 UNAVAILABLE；worker 对 LLM 步骤记 RunFailed 并说明原因），
+// 而不是"生成成功"却写进假数据。
+func BuildGenerationGateway(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger,
+	secrets *secretbox.Cipher) *Gateway {
+	loader := &RegistryLoader{Pool: pool}
 	bindings, excluded, err := loader.Load(ctx)
 	if err != nil {
 		logger.Error("生成网关：Model Registry 装载失败，自动生成将不可用", "error", err)
 		return nil
 	}
 
-	kept := make([]llm.EndpointBinding, 0, len(bindings))
+	kept := make([]EndpointBinding, 0, len(bindings))
 	for _, b := range bindings {
 		if b.DeploymentType != "HTTP" {
-			excluded = append(excluded, llm.Exclusion{
+			excluded = append(excluded, Exclusion{
 				ProviderID: b.ProviderID, EndpointID: b.EndpointID,
 				EndpointName: b.EndpointName, ModelID: b.ModelID,
 				Reason: "非 HTTP 端点（MOCK/回放）不参与自动生成，避免产出伪造内容",
@@ -43,16 +44,16 @@ func buildGenerationGateway(ctx context.Context, pool *pgxpool.Pool, logger *slo
 		kept = append(kept, b)
 	}
 
-	ledger := llm.NewUsageLedger(pool)
-	gw := llm.BuildGateway(kept, excluded, llm.GatewayOptions{
+	ledger := NewUsageLedger(pool)
+	gw := BuildGateway(kept, excluded, GatewayOptions{
 		Logger:  logger,
 		Getenv:  os.Getenv,
 		Secrets: secrets,
-		Limiter: llm.NewLimiter(clock.RealClock{}),
+		Limiter: NewLimiter(clock.RealClock{}),
 		Ledger:  ledger,
-		Budget:  &llm.BudgetGuard{Ledger: ledger, Limit: 5.0, ReserveFactor: llm.DefaultReserveFactor},
-		Cache:   llm.NewSemanticCache(nil, nil, clock.RealClock{}),
-		Kind:    llm.KindBatch,
+		Budget:  &BudgetGuard{Ledger: ledger, Limit: 5.0, ReserveFactor: DefaultReserveFactor},
+		Cache:   NewSemanticCache(nil, nil, clock.RealClock{}),
+		Kind:    KindBatch,
 	})
 	if len(gw.Providers) == 0 {
 		logger.Warn("生成网关：没有可用的真实 HTTP 模型端点，自动生成端点将返回 UNAVAILABLE",

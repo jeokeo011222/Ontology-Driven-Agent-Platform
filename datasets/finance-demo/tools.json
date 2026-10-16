@@ -773,5 +773,75 @@
         "operation": "anchor"
       }
     }
+  },
+  {
+    "id": "d0000019-0000-4000-8000-000000000019",
+    "tool_key": "knowledge-retrieval",
+    "description": "企业知识库混合检索：pgvector 余弦 + trigram 词项双路召回，RRF(k=60) 融合去重；两路皆空返回空集",
+    "is_builtin": true,
+    "plugin": {
+      "id": "b0000019-0000-4000-8000-000000000019",
+      "plugin_key": "tool:knowledge-retrieval",
+      "plugin_kind": "TOOL",
+      "name": "知识库混合检索",
+      "description": "平台内置工具插件：kb.chunks 向量 + 词项混合检索",
+      "version_id": "c0000019-0000-4000-8000-000000000019",
+      "version": "0.1.0",
+      "manifest": {
+        "kind": "TOOL",
+        "tool_key": "knowledge-retrieval"
+      }
+    },
+    "version": {
+      "id": "e0000019-0000-4000-8000-000000000019",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "检索问题" },
+          "top_k": { "type": "integer", "description": "返回条数，默认 5，上限 20" },
+          "document_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "可选：限定检索的文档 id 列表"
+          }
+        },
+        "required": ["query"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" },
+          "top_k": { "type": "integer" },
+          "vector_hits": { "type": "integer" },
+          "term_hits": { "type": "integer" },
+          "warnings": { "type": "array", "items": { "type": "string" } },
+          "hits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "document_id": { "type": "string" },
+                "doc_title": { "type": "string" },
+                "source_path": { "type": "string" },
+                "chunk_index": { "type": "integer" },
+                "content": { "type": "string" },
+                "score": { "type": "number" },
+                "rrf": { "type": "number" }
+              }
+            }
+          }
+        },
+        "required": ["query", "hits"]
+      },
+      "capabilities": ["knowledge:search"],
+      "effect_class": "READ",
+      "execution_config": {
+        "adapter": "knowledge-retrieval",
+        "package": "internal/api/handlers",
+        "operation": "hybrid_search"
+      }
+    }
   }
 ]

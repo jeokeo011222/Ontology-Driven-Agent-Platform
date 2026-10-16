@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"odap/internal/action"
 	"odap/internal/api/httperr"
 	"odap/internal/api/middleware"
 	"odap/internal/api/sse"
@@ -34,6 +35,8 @@ import (
 	"odap/internal/platform/errors"
 	"odap/internal/platform/ids"
 	"odap/internal/platform/tenantctx"
+	"odap/internal/registry"
+	"odap/internal/toolruntime"
 )
 
 // Deps 是处理器的依赖集合（由 cmd/api 装配；测试可注入子集）。
@@ -87,6 +90,26 @@ type Deps struct {
 	// 并说明原因——校验必须真读图，因此无图存储时**无法**给出结论，
 	// 而不是给出一个"没查到问题"的空结论。
 	GraphStore graphstore.GraphStore
+
+	// Catalog 是工具/智能体目录解析服务（registry.CatalogService）。
+	// 工具调用链解析"可执行版本"的唯一真值来源；未装配时工具调用端点
+	// 返回 UNAVAILABLE（解析器缺失时拒绝伪造一个版本语义）。
+	Catalog *registry.CatalogService
+
+	// ToolCache 是 READ 类工具执行结果的短 TTL 缓存（toolruntime.ResultCache）。
+	// 可选：nil 时每次调用都真实执行（缓存只是增强项，绝不是正确性依赖）。
+	ToolCache *toolruntime.ResultCache
+
+	// KBEmbeddingModel 是知识库摄取（嵌入/抽取任务）点名路由的嵌入 ModelID
+	// （环境变量 ODAP_KB_EMBEDDING_MODEL；必须是 Model Registry 已登记且声明
+	// Embeddings 能力的模型）。留空时文档上传仍可解析分块，但创建摄取任务
+	// 直接失败并明确报错——无嵌入模型就不可能建向量索引，fail-closed。
+	KBEmbeddingModel string
+
+	// Actions 是动作记录器（internal/action.Recorder）：runs/工具调用/推理/
+	// 知识摄取/A2A 各业务流经 RecordActionForFlow 旁路记录 Action（PROV-O
+	// 溯源 + 相似检索嵌入）。未装配时记录跳过并告警一次，绝不阻断业务流。
+	Actions *action.Recorder
 }
 
 // LLMCompleter 是 LLM Gateway 的最小依赖面（生成类端点唯一入口）。
@@ -149,6 +172,13 @@ func New(d Deps) *Handler {
 		d.Version = "1.0.0"
 	}
 	return &Handler{deps: d}
+}
+
+// SetERP 装配期注入 ERP Port（worker 进程没有 HTTP 装配链路，用显式注入
+// 代替 env 解析散落；cmd/api 走 Deps 字面量，不经此方法）。
+func (h *Handler) SetERP(port erp.Port, connectionID string) {
+	h.deps.ERP = port
+	h.deps.ERPConnectionID = connectionID
 }
 
 // maxBodyBytes 是请求体上限（防御超大 JSON）。
@@ -330,11 +360,19 @@ func (h *Handler) appendOutbox(r *http.Request, tenantID ids.ID, evType string, 
 // CriticalityCritical 路径阻断业务，见 config_crud 等写操作处理器。
 func (h *Handler) recordAudit(r *http.Request, id tenantctx.Identity, evType, action, outcome string,
 	resType, resID string, runID ids.ID, payload map[string]any) {
+	h.recordAuditCtx(r.Context(), id, evType, action, outcome, resType, resID, runID,
+		middleware.RequestIDFromContext(r.Context()), payload)
+}
+
+// recordAuditCtx 是 recordAudit 的 context 版（无 HTTP 请求的调用方——
+// worker 步进执行器——用同一条审计写入路径，RequestID 由调用方显式传入）。
+func (h *Handler) recordAuditCtx(ctx context.Context, id tenantctx.Identity, evType, action, outcome string,
+	resType, resID string, runID ids.ID, requestID string, payload map[string]any) {
 	if h.deps.Audit == nil {
 		return
 	}
 	b, _ := json.Marshal(payload)
-	if _, err := h.deps.Audit.Append(r.Context(), audit.Event{
+	if _, err := h.deps.Audit.Append(ctx, audit.Event{
 		TenantID:     id.TenantID,
 		EventType:    evType,
 		ActorType:    "USER",
@@ -343,7 +381,7 @@ func (h *Handler) recordAudit(r *http.Request, id tenantctx.Identity, evType, ac
 		ResourceID:   resID,
 		Action:       action,
 		Outcome:      outcome,
-		RequestID:    middleware.RequestIDFromContext(r.Context()),
+		RequestID:    requestID,
 		RunID:        runID,
 		EventPayload: b,
 	}); err != nil && h.deps.Logger != nil {

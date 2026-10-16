@@ -69,7 +69,7 @@ func TestExecScriptToolEchoSuccess(t *testing.T) {
 		ToolKey:         "script.echo",
 		ExecutionConfig: scriptCfgJSON(t, loadTestWasmB64(t, "echo.wasm"), 30000, 1<<20),
 	}
-	out, err := h.executeToolInvocation(httptest.NewRequest("POST", "/invoke", nil), id, rec, "inv-echo-1", args)
+	out, err := h.ExecuteToolInvocation(httptest.NewRequest("POST", "/invoke", nil).Context(), id, rec, "inv-echo-1", args)
 	if err != nil {
 		t.Fatalf("echo 模块真实执行失败：%v", err)
 	}

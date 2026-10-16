@@ -1721,6 +1721,50 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Policies]
+      summary: 基于最新已发布版本克隆新 DRAFT 版本（已发布策略不可原地修改，§8.4）
+      operationId: createPolicyVersion
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: policy_key
+          schema: { type: string }
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                based_on:
+                  type: string
+                  enum: [current]
+                  default: current
+                  description: 克隆基准；当前仅支持最新 PUBLISHED 版本
+      responses:
+        "201":
+          description: 新 DRAFT 版本
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, policy_key, version, based_on, status]
+                properties:
+                  id: { type: string, format: uuid }
+                  policy_key: { type: string }
+                  version: { type: string }
+                  based_on: { type: string, description: 克隆基准版本号 }
+                  status: { type: string, enum: [DRAFT] }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
 
   /api/v1/policies/{key}/versions/{version}:
     patch:
@@ -3163,6 +3207,76 @@ paths:
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
+  /api/v1/admin/connectors/{id}/test:
+    post:
+      tags: [BFF]
+      summary: 连接器在线探测（真实 Health 探针，不落库不产生业务写入）
+      operationId: testConnector
+      description: >-
+        仅 ERP 类连接器（plugin_key 可识别为 nc65 / mock-erp）可探测：租户 DB 连接
+        优先、进程 env 装配回落。探测结论以 200 + ok 字段返回（探测失败是数据，
+        不是服务器错误）；其他类型连接器返回 503 并说明无在线探针（fail-closed，
+        绝不返回无依据的 ok:true）。
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                probe: { type: string, description: 探测模式；当前仅支持预定义安全探针 }
+      responses:
+        "200":
+          description: 探测结论
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean }
+                  detail: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/admin/subjects/{id}/disable:
+    post:
+      tags: [Admin]
+      summary: 停用主体（status=DISABLED + subject_version 递增触发会话撤销传播，§14）
+      operationId: disableSubject
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, description: 停用原因（进审计） }
+      responses:
+        "200":
+          description: 已停用
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
   /api/v1/ops/alerts:
     get:
       tags: [BFF]
@@ -3181,19 +3295,22 @@ paths:
   /api/v1/releases:
     get:
       tags: [BFF]
-      summary: 质量门禁决策（发布治理视图；cursor 分页 + 关键字筛选，默认 10 行/页）
+      summary: 发布实体列表（cursor 分页 + 关键字筛选，默认 10 行/页）
       operationId: listReleases
+      description: >-
+        真源为 release_mgmt.releases（000040 发布实体）。此前本端点返回质量门禁
+        决策记录（ReleaseDecision），与前端发布管理页的 Release 形状脱节，已废弃。
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
         - name: q
           in: query
           required: false
-          description: 关键字检索（decision / policy_revision）
+          description: 关键字检索（artifact_type / artifact_id / version）
           schema: { type: string }
       responses:
         "200":
-          description: 发布决策列表
+          description: 发布实体列表
           content:
             application/json:
               schema:
@@ -3202,9 +3319,441 @@ paths:
                 properties:
                   items:
                     type: array
-                    items: { $ref: "#/components/schemas/ReleaseDecision" }
+                    items: { $ref: "#/components/schemas/Release" }
                   next_cursor: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/releases/{id}/promote:
+    post:
+      tags: [BFF]
+      summary: 发布 candidate（仅 gate_state=passed；状态机 CAS 守卫）
+      operationId: promoteRelease
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                environment: { type: string, description: 发布目标环境（可选，缺省沿用原值） }
+      responses:
+        "200":
+          description: 发布后的完整 Release
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Release" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/releases/{id}/rollback:
+    post:
+      tags: [BFF]
+      summary: 回滚 promoted 为 rolled_back（仅 promoted 状态可回滚）
+      operationId: rollbackRelease
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                target_version:
+                  type: string
+                  description: 回滚目标版本号或 'previous_published'（响应以 rollback_target 留痕）
+      responses:
+        "200":
+          description: 回滚后的完整 Release（附 rollback_target）
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Release"
+                  - type: object
+                    properties:
+                      rollback_target: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  # ── 模块 A：企业知识问答本体（知识库）──
+  # 推理引擎（/api/v1/reasoning/*）为条件装配端点，权威契约是
+  # contracts/proto/reasoning.proto（gRPC）；A2A Agent Card 挂认证链根路径
+  # GET /.well-known/agent.json（内容租户绑定，见 internal/api/handlers/a2a_gateway.go）。
+  /api/v1/knowledge/documents:
+    post:
+      tags: [Knowledge]
+      summary: 上传知识文档（multipart：file + 可选 target_ontology_version_id）
+      operationId: createKnowledgeDocument
+      description: >-
+        白名单 pdf/docx/xlsx/md/txt（扫描版 PDF 无文本层直接报错）；同步解析分块落库，
+        创建 EMBED 任务（指定 target_ontology_version_id 时同时创建 EXTRACT 抽取入图任务）。
+        嵌入模型未配置时 fail-closed 400。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 文档原件（≤50MB，pdf/docx/xlsx/md/txt）
+                target_ontology_version_id:
+                  type: string
+                  description: 抽取目标本体版本（可选；缺省仅 EMBED）
+      responses:
+        "200":
+          description: 文档与任务创建结果（document + explain）
+          content:
+            application/json:
+              schema: { type: object }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/BadRequest" }
+        "415":
+          description: 不支持的文档类型（白名单外/扫描版 PDF）
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    get:
+      tags: [Knowledge]
+      summary: 知识文档列表（cursor 分页 + 关键字/状态筛选，默认 10 行/页）
+      operationId: listKnowledgeDocuments
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, description: READY/PROCESSING/FAILED/DELETED }
+      responses:
+        "200":
+          description: 文档分页列表
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/knowledge/documents/{id}:
+    get:
+      tags: [Knowledge]
+      summary: 文档详情（含分块统计与 EMBED/EXTRACT 任务进度）
+      operationId: getKnowledgeDocument
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: 文档详情
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    delete:
+      tags: [Knowledge]
+      summary: 删除知识文档（软删 + 级联任务/分块失效）
+      operationId: deleteKnowledgeDocument
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: 删除后的文档（status=DELETED）
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/knowledge/jobs/{id}/retry:
+    post:
+      tags: [Knowledge]
+      summary: 重试失败的摄取任务（EMBED/EXTRACT）
+      operationId: retryKnowledgeJob
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: 重置后的任务
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  # ── 模块 C：A2A 多智能体协同 ──
+  /api/v1/a2a/remote-agents:
+    get:
+      tags: [A2A]
+      summary: 远程 Agent 注册表列表（cursor 分页）
+      operationId: listRemoteAgents
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: 远程 Agent 分页列表
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [A2A]
+      summary: 登记远程 Agent（base_url + 可选认证头环境变量引用 + 工具白名单）
+      operationId: createRemoteAgent
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [agent_key, name, base_url]
+              properties:
+                agent_key: { type: string }
+                name: { type: string }
+                description: { type: string }
+                base_url: { type: string, format: uri }
+                auth_header_name: { type: string }
+                auth_header_ref: { type: string, description: 凭据环境变量名（明文不落库） }
+                capabilities: { type: string }
+                tool_whitelist: { type: array, items: { type: string } }
+      responses:
+        "201":
+          description: 已登记的远程 Agent
+          content:
+            application/json:
+              schema: { type: object }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/a2a/remote-agents/{id}:
+    get:
+      tags: [A2A]
+      summary: 远程 Agent 详情
+      operationId: getRemoteAgent
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: 远程 Agent
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    patch:
+      tags: [A2A]
+      summary: 更新远程 Agent（部分字段；状态变更走 status 字段）
+      operationId: updateRemoteAgent
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: 更新后的远程 Agent
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    delete:
+      tags: [A2A]
+      summary: 移除远程 Agent 注册
+      operationId: deleteRemoteAgent
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: 已移除
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/a2a/remote-agents/{id}/probe:
+    post:
+      tags: [A2A]
+      summary: 探测远程 Agent（拉取其 /.well-known/agent.json 做形状校验）
+      operationId: probeRemoteAgent
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: 远端 Agent Card（含形状校验结论）
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/Unavailable" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/a2a:
+    post:
+      tags: [A2A]
+      summary: A2A JSON-RPC 2.0 单端点（message/send、tasks/send[Subscribe]、tasks/get/list/cancel）
+      operationId: a2aGateway
+      description: >-
+        Google Agent2Agent 协议映射：任务即 Run（task_id=run_id）；同步等待终态 120s，
+        超时返回当前状态供 tasks/get 轮询；错误码遵循 JSON-RPC 2.0。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [jsonrpc, method, id]
+              properties:
+                jsonrpc: { type: string, example: "2.0" }
+                method: { type: string, example: "message/send" }
+                id: { oneOf: [{ type: string }, { type: integer }] }
+                params: { type: object }
+      responses:
+        "200":
+          description: JSON-RPC 响应（result 或 error）
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  # ── 模块 D：本体 Action 管理（查询侧）──
+  /api/v1/actions:
+    get:
+      tags: [Actions]
+      summary: 动作列表（类型/结论/执行者/时间窗筛选 + cursor 分页）
+      operationId: listActions
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - { name: type, in: query, required: false, schema: { type: string }, description: QUERY/UPDATE/INFER/ACTION/TOOL }
+        - { name: outcome, in: query, required: false, schema: { type: string }, description: SUCCESS/DENIED/REJECTED/ERROR }
+        - { name: actor_kind, in: query, required: false, schema: { type: string } }
+        - { name: from, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: q, in: query, required: false, schema: { type: string } }
+      responses:
+        "200":
+          description: 动作分页列表
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/actions/{id}:
+    get:
+      tags: [Actions]
+      summary: 动作详情（行字段 + 关联 Run 摘要 + PROV-O 三元组）
+      operationId: getAction
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: 动作详情（prov_triples / prov_unavailable 显式区分）
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/actions/{id}/similar:
+    post:
+      tags: [Actions]
+      summary: 相似动作检索（pgvector 余弦距离升序 topK）
+      operationId: similarActions
+      description: 该动作尚未完成嵌入补算时返回 409（embed_status 四态显式，不静默空集）。
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                top_k: { type: integer, minimum: 0, default: 5 }
+      responses:
+        "200":
+          description: 相似动作列表（items + distance）
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/actions/{id}/prov.ttl:
+    get:
+      tags: [Actions]
+      summary: 动作 PROV-O 溯源 Turtle 导出（prov:{tenant}:{action_id} 命名图）
+      operationId: actionProvTurtle
+      parameters:
+        - $ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: Turtle 文本
+          content:
+            text/turtle:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
@@ -3733,11 +4282,12 @@ components:
         counts:
           type: object
           description: 规模信息，全部取自 manifest（本端点不读图存储，故不含运行时实例计数）。
-          required: [tbox_triples, abox_triples, shapes, target_classes, instances]
+          required: [tbox_triples, abox_triples, shapes, constraints, target_classes, instances]
           properties:
             tbox_triples: { type: integer }
             abox_triples: { type: integer }
             shapes: { type: integer }
+            constraints: { type: integer }
             target_classes: { type: integer }
             instances: { type: integer }
 
@@ -4618,6 +5168,19 @@ components:
         unknown_tool_calls: { type: integer }
         unresolved_external_operations: { type: integer }
         generated_at: { type: string, format: date-time }
+
+    Release:
+      type: object
+      required: [id, artifact_type, artifact_id, version, state, gate_state]
+      properties:
+        id: { type: string, format: uuid }
+        artifact_type: { type: string, enum: [ONTOLOGY, AGENT, WORKFLOW, POLICY] }
+        artifact_id: { type: string }
+        version: { type: string }
+        state: { type: string, enum: [candidate, promoted, rolled_back] }
+        gate_state: { type: string, enum: [passed, failed, pending] }
+        environment: { type: string, nullable: true }
+        promoted_at: { type: string, format: date-time, nullable: true }
 
     ReleaseDecision:
       type: object

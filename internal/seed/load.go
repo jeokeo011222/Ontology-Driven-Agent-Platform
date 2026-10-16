@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"odap/internal/platform/ids"
 	"odap/internal/tools"
@@ -18,6 +19,7 @@ const (
 	ontologiesFile  = "ontologies.json"
 	agentsFile      = "agents.json"
 	toolsFile       = "tools.json"
+	skillsFile      = "skills.json"
 	workflowsFile   = "workflows.json"
 	providersFile   = "providers.json"
 	policiesFile    = "policies.json"
@@ -25,6 +27,7 @@ const (
 	evaluationsFile = "evaluations.json"
 	plansFile       = "plans.json"
 	runsFile        = "runs.json"
+	releasesFile    = "releases.json"
 )
 
 // Load 读取并校验一个数据集目录。
@@ -48,6 +51,7 @@ func Load(dir string) (*Dataset, error) {
 		{ontologiesFile, &ds.Ontologies},
 		{agentsFile, &ds.Agents},
 		{toolsFile, &ds.Tools},
+		{skillsFile, &ds.Skills},
 		{workflowsFile, &ds.Workflows},
 		{providersFile, &ds.Providers},
 		{policiesFile, &ds.Policies},
@@ -55,6 +59,7 @@ func Load(dir string) (*Dataset, error) {
 		{evaluationsFile, &ds.Evaluations},
 		{plansFile, &ds.Plans},
 		{runsFile, &ds.Runs},
+		{releasesFile, &ds.Releases},
 	}
 	for _, s := range sections {
 		path := filepath.Join(dir, s.file)
@@ -112,6 +117,9 @@ func (d *Dataset) Validate() error {
 		return err
 	}
 	if err := checkUnique("tool_key", keysOf(d.Tools, func(t Tool) string { return t.Key })); err != nil {
+		return err
+	}
+	if err := checkUnique("skill_key", keysOf(d.Skills, func(s Skill) string { return s.SkillKey })); err != nil {
 		return err
 	}
 	if err := checkUnique("workflow_key", keysOf(d.Workflows, func(w Workflow) string { return w.Key })); err != nil {
@@ -184,6 +192,53 @@ func (d *Dataset) Validate() error {
 			}
 			if err := tools.ValidateSchema(s.raw); err != nil {
 				return fmt.Errorf("seed: tools[%d].version.%s 不被平台支持: %w", i, s.name, err)
+			}
+		}
+	}
+
+	// ---- 技能：版本非空、提示词必填、工具绑定不得悬空 ----
+	toolKeySet := map[string]bool{}
+	for _, t := range d.Tools {
+		toolKeySet[t.Key] = true
+	}
+	for i, s := range d.Skills {
+		if err := requireUUID("skills", s.ID, "id"); err != nil {
+			return err
+		}
+		if s.SkillKey == "" || s.Name == "" {
+			return fmt.Errorf("seed: skills[%d] 的 skill_key 与 name 必填", i)
+		}
+		if err := requireUUID(fmt.Sprintf("skills[%d].version", i), s.Version.ID, "id"); err != nil {
+			return err
+		}
+		switch s.Version.Status {
+		case "DRAFT", "PUBLISHED":
+		default:
+			return fmt.Errorf("seed: skills[%d].version.status 非法（%q），须为 DRAFT/PUBLISHED", i, s.Version.Status)
+		}
+		if strings.TrimSpace(s.Version.PromptFragment) == "" {
+			return fmt.Errorf("seed: skills[%d].version.prompt_fragment 必填（技能展开的提示词小节）", i)
+		}
+		for _, tk := range s.Version.ToolBindings {
+			if !toolKeySet[tk] {
+				return fmt.Errorf("seed: skills[%d].version.tool_bindings 引用了未声明的工具 %q（拒绝悬空引用）", i, tk)
+			}
+		}
+		for _, raw := range []struct {
+			name string
+			data json.RawMessage
+		}{
+			{"input_schema", s.Version.InputSchema},
+			{"output_schema", s.Version.OutputSchema},
+		} {
+			if len(raw.data) == 0 {
+				continue // 技能的 Schema 可缺省（问答类技能没有独立输入契约）
+			}
+			if !json.Valid(raw.data) {
+				return fmt.Errorf("seed: skills[%d].version.%s 必须是合法 JSON", i, raw.name)
+			}
+			if err := tools.ValidateSchema(raw.data); err != nil {
+				return fmt.Errorf("seed: skills[%d].version.%s 不被平台支持: %w", i, raw.name, err)
 			}
 		}
 	}
@@ -317,13 +372,69 @@ func (d *Dataset) Validate() error {
 		}
 	}
 
-	// ---- 跨节引用：Agent 的 dependency_manifest 不得引用未声明的工具/本体 ----
+	// ---- 发布实体：词表 + artifact 引用完整性 + 版本唯一 ----
+	// artifact_id 允许引用：本数据集的插件（AGENT/TOOL/WORKFLOW 载体）或本体 id。
+	releaseKeys := map[string]bool{}
+	artifactRefs := map[string]bool{}
+	for _, a := range d.Agents {
+		artifactRefs[a.Plugin.ID] = true
+	}
+	for _, t := range d.Tools {
+		artifactRefs[t.Plugin.ID] = true
+	}
+	for _, w := range d.Workflows {
+		artifactRefs[w.Plugin.ID] = true
+	}
+	for _, o := range d.Ontologies {
+		artifactRefs[o.ID] = true
+	}
+	for _, p := range d.Policies {
+		artifactRefs[p.ID] = true
+	}
+	for i, r := range d.Releases {
+		if err := requireUUID(fmt.Sprintf("releases[%d]", i), r.ID, "id"); err != nil {
+			return err
+		}
+		switch r.ArtifactType {
+		case "ONTOLOGY", "AGENT", "WORKFLOW", "POLICY":
+		default:
+			return fmt.Errorf("seed: releases[%d].artifact_type 非法（%q），须为 ONTOLOGY/AGENT/WORKFLOW/POLICY", i, r.ArtifactType)
+		}
+		switch r.State {
+		case "candidate", "promoted", "rolled_back":
+		default:
+			return fmt.Errorf("seed: releases[%d].state 非法（%q），须为 candidate/promoted/rolled_back", i, r.State)
+		}
+		switch r.GateState {
+		case "passed", "failed", "pending":
+		default:
+			return fmt.Errorf("seed: releases[%d].gate_state 非法（%q），须为 passed/failed/pending", i, r.GateState)
+		}
+		// 终态与门禁的一致性：gate 未过却已 promoted 是自相矛盾的演示数据。
+		if r.State == "promoted" && r.GateState != "passed" {
+			return fmt.Errorf("seed: releases[%d]（%s）state=promoted 但 gate_state=%s（已发布的实体门禁必为 passed）", i, r.ID, r.GateState)
+		}
+		if r.ArtifactID != "" && !artifactRefs[r.ArtifactID] {
+			return fmt.Errorf("seed: releases[%d].artifact_id=%s 未在本数据集声明（拒绝悬空引用）", i, r.ArtifactID)
+		}
+		key := r.ArtifactType + "|" + r.ArtifactID + "|" + r.Version
+		if releaseKeys[key] {
+			return fmt.Errorf("seed: releases[%d] 与其他条目的 (artifact_type, artifact_id, version) 重复", i)
+		}
+		releaseKeys[key] = true
+	}
+
+	// ---- 跨节引用：Agent 的 dependency_manifest 不得引用未声明的工具/技能/本体 ----
 	// 若无此校验，dependency_manifest 里写错工具名（例如 erp.expense.queryy）
 	// 会静默通过：seed 报告成功，但 Agent 实际可调用的工具集与声明的不是一回事。
 	// 这与 Run 的悬空引用是同一类风险，必须一起拦住。
 	toolKeys := map[string]bool{}
 	for _, t := range d.Tools {
 		toolKeys[t.Key] = true
+	}
+	skillKeys := map[string]bool{}
+	for _, s := range d.Skills {
+		skillKeys[s.SkillKey] = true
 	}
 	ontologyRefs := map[string]bool{}
 	for _, o := range d.Ontologies {
@@ -349,6 +460,7 @@ func (d *Dataset) Validate() error {
 			Ontology []string `json:"ontology"`
 			Tools    []string `json:"tools"`
 			Models   []string `json:"models"`
+			Skills   []string `json:"skills"`
 		}
 		if err := json.Unmarshal(raw, &dep); err != nil {
 			return fmt.Errorf("seed: agents[%d].version.dependency_manifest 必须是 JSON 对象: %w", i, err)
@@ -356,6 +468,11 @@ func (d *Dataset) Validate() error {
 		for _, tk := range dep.Tools {
 			if !toolKeys[tk] {
 				return fmt.Errorf("seed: agents[%d].version.dependency_manifest.tools 引用了未声明的工具 %q（拒绝悬空引用）", i, tk)
+			}
+		}
+		for _, sk := range dep.Skills {
+			if !skillKeys[sk] {
+				return fmt.Errorf("seed: agents[%d].version.dependency_manifest.skills 引用了未声明的技能 %q（拒绝悬空引用）", i, sk)
 			}
 		}
 		for _, ref := range dep.Ontology {

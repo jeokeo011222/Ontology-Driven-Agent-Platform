@@ -369,6 +369,7 @@ function ModelRevisionsSection({
   const [nativeSchema, setNativeSchema] = useState<'false' | 'true'>('false');
   const [supportsSeed, setSupportsSeed] = useState<'false' | 'true'>('false');
   const [supportsTools, setSupportsTools] = useState<'false' | 'true'>('true');
+  const [supportsEmbeddings, setSupportsEmbeddings] = useState<'false' | 'true'>('false');
   const [maxTokens, setMaxTokens] = useState('65536');
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -393,6 +394,7 @@ function ModelRevisionsSection({
       native_schema: nativeSchema === 'true',
       supports_seed: supportsSeed === 'true',
       supports_tools: supportsTools === 'true',
+      embeddings: supportsEmbeddings === 'true',
       max_context_tokens: tokens,
     };
     register.mutate(
@@ -528,6 +530,13 @@ function ModelRevisionsSection({
             value={supportsTools}
             options={[{ value: 'true', label: '支持' }, { value: 'false', label: '不支持' }]}
             onChange={(e) => setSupportsTools(e.target.value as 'false' | 'true')} />
+        </Field>
+        <Field label="向量嵌入能力" htmlFor={`ea-mr-emb-${endpoint.endpoint_id}`}
+          hint="知识库文档嵌入（kb.ingest）必需；仅当该模型提供 /embeddings 接口时声明，未声明的模型不会参与嵌入路由。">
+          <Select id={`ea-mr-emb-${endpoint.endpoint_id}`}
+            value={supportsEmbeddings}
+            options={[{ value: 'false', label: '不支持' }, { value: 'true', label: '支持' }]}
+            onChange={(e) => setSupportsEmbeddings(e.target.value as 'false' | 'true')} />
         </Field>
         <Field label="最大上下文 tokens" htmlFor={`ea-mr-ctx-${endpoint.endpoint_id}`} required
           hint="必须为正整数，否则该模型会在装配期被排除。">

@@ -136,9 +136,11 @@ func (a *Applier) purgeTenant(ctx context.Context, tx pgx.Tx, ds *Dataset) error
 		pluginIDs, pluginVerIDs                    []string
 		agentIDs, agentVerIDs                      []string
 		toolIDs, toolVerIDs                        []string
+		skillIDs, skillVerIDs                      []string
 		workflowIDs, workflowVerIDs                []string
 		ontIDs, ontVerIDs                          []string
 		planIDs, runIDs                            []string
+		releaseIDs                                 []string
 	)
 	for _, o := range ds.Tenant.Orgs {
 		orgIDs = append(orgIDs, o.ID)
@@ -164,6 +166,10 @@ func (a *Applier) purgeTenant(ctx context.Context, tx pgx.Tx, ds *Dataset) error
 		pluginIDs = append(pluginIDs, tl.Plugin.ID)
 		pluginVerIDs = append(pluginVerIDs, tl.Plugin.VersionID)
 	}
+	for _, sk := range ds.Skills {
+		skillIDs = append(skillIDs, sk.ID)
+		skillVerIDs = append(skillVerIDs, sk.Version.ID)
+	}
 	for _, wf := range ds.Workflows {
 		workflowIDs = append(workflowIDs, wf.ID)
 		workflowVerIDs = append(workflowVerIDs, wf.Version.ID)
@@ -182,18 +188,24 @@ func (a *Applier) purgeTenant(ctx context.Context, tx pgx.Tx, ds *Dataset) error
 	for _, r := range ds.Runs {
 		runIDs = append(runIDs, r.ID)
 	}
+	for _, r := range ds.Releases {
+		releaseIDs = append(releaseIDs, r.ID)
+	}
 
 	steps := []struct {
 		table, col string
 		ids        []string
 	}{
 		{"runtime.agent_runs", "id", runIDs},
+		{"release_mgmt.releases", "release_id", releaseIDs},
 		{"planning.plan_revisions", "plan_id", planIDs},
 		{"planning.plans", "plan_id", planIDs},
 		{"registry.agent_versions", "id", agentVerIDs},
 		{"registry.agents", "id", agentIDs},
 		{"registry.tool_versions", "id", toolVerIDs},
 		{"registry.tools", "id", toolIDs},
+		{"registry.skill_versions", "id", skillVerIDs},
+		{"registry.skills", "id", skillIDs},
 		{"registry.workflow_versions", "id", workflowVerIDs},
 		{"registry.workflows", "id", workflowIDs},
 		{"ontology.publications", "ontology_version_id", ontVerIDs},
@@ -541,6 +553,55 @@ func (a *Applier) applyTenant(ctx context.Context, tx pgx.Tx, ds *Dataset) error
 		}
 	}
 
+	// ---- 技能（registry.skills / registry.skill_versions）----
+	// 技能没有插件载体（迁移 000038 的独立注册表），登记"提示词片段 + 工具绑定"。
+	// 版本内容不可变（DRAFT→PUBLISHED 单向），走 execVersionUpsert 做内容一致性校验。
+	for _, sk := range ds.Skills {
+		if _, err := tx.Exec(ctx, `
+            INSERT INTO registry.skills (id, tenant_id, skill_key, name, description, domain, status, is_builtin)
+            VALUES ($1, app.current_tenant_id(), $2, $3, $4, $5, 'ACTIVE', $6)
+            ON CONFLICT (tenant_id, id) DO NOTHING`,
+			sk.ID, sk.SkillKey, sk.Name, sk.Description, sk.Domain, sk.Builtin); err != nil {
+			return fmt.Errorf("写入技能 %s 失败: %w", sk.SkillKey, err)
+		}
+		toolBindingsJSON, _ := json.Marshal(sk.Version.ToolBindings)
+		if string(toolBindingsJSON) == "null" {
+			toolBindingsJSON = []byte("[]")
+		}
+		content, _ := json.Marshal(map[string]any{
+			"prompt_fragment": sk.Version.PromptFragment,
+			"tool_bindings":   sk.Version.ToolBindings,
+			"input_schema":    sk.Version.InputSchema,
+			"output_schema":   sk.Version.OutputSchema,
+		})
+		digest := digestBytes(content)
+		if err := execVersionUpsert(ctx, tx, `
+            INSERT INTO registry.skill_versions AS sv
+                (id, tenant_id, skill_id, version, prompt_fragment, tool_bindings,
+                 input_schema, output_schema, content_digest, status, published_at)
+            VALUES ($1, app.current_tenant_id(), $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9,
+                    CASE WHEN $9 = 'PUBLISHED' THEN now() ELSE NULL END)
+            ON CONFLICT (tenant_id, skill_id, version) DO UPDATE
+               SET prompt_fragment = EXCLUDED.prompt_fragment,
+                   tool_bindings = EXCLUDED.tool_bindings,
+                   input_schema = EXCLUDED.input_schema,
+                   output_schema = EXCLUDED.output_schema,
+                   content_digest = EXCLUDED.content_digest,
+                   status = EXCLUDED.status,
+                   published_at = COALESCE(sv.published_at, EXCLUDED.published_at)
+             WHERE sv.status <> 'PUBLISHED'`,
+			[]any{sk.Version.ID, sk.ID, sk.Version.Version, sk.Version.PromptFragment,
+				string(toolBindingsJSON), coalesceJSON(sk.Version.InputSchema, "{}"),
+				coalesceJSON(sk.Version.OutputSchema, "{}"),
+				digest, sk.Version.Status},
+			`SELECT content_digest FROM registry.skill_versions
+              WHERE tenant_id = app.current_tenant_id() AND skill_id = $1 AND version = $2`,
+			[]any{sk.ID, sk.Version.Version},
+			digest, fmt.Sprintf("技能版本 %s@%s", sk.SkillKey, sk.Version.Version)); err != nil {
+			return err
+		}
+	}
+
 	// ---- 工作流（含插件与插件版本）----
 	// 与 Agent / Tool 完全同构：工作流本身是插件式资产，版本行由 000018 的触发器
 	// 保证"已发布即不可变"，因此同样走 execVersionUpsert 做内容一致性校验。
@@ -732,6 +793,23 @@ func (a *Applier) applyTenant(ctx context.Context, tx pgx.Tx, ds *Dataset) error
 			return fmt.Errorf("写入演示运行 %s 失败: %w", r.ID, err)
 		}
 	}
+
+	// ---- 发布实体（release_mgmt.releases；promote/rollback 的可操作真源）----
+	// state=promoted 时 promoted_at 由 CASE 表达式落 now()——演示数据不含
+	// promoted_at 字段，避免手工时间戳与真实时钟漂移。
+	for _, r := range ds.Releases {
+		if _, err := tx.Exec(ctx, `
+            INSERT INTO release_mgmt.releases
+                (release_id, tenant_id, artifact_type, artifact_id, version,
+                 state, gate_state, environment, promoted_at)
+            VALUES ($1, app.current_tenant_id(), $2, $3, $4, $5, $6, NULLIF($7, ''),
+                    CASE WHEN $5 = 'promoted' THEN now() ELSE NULL END)
+            ON CONFLICT (tenant_id, artifact_type, artifact_id, version) DO NOTHING`,
+			r.ID, r.ArtifactType, r.ArtifactID, r.Version, r.State, r.GateState,
+			r.Environment); err != nil {
+			return fmt.Errorf("写入发布实体 %s 失败: %w", r.ID, err)
+		}
+	}
 	return nil
 }
 
@@ -813,4 +891,13 @@ func short8(s string) string {
 func digestBytes(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+// coalesceJSON 把可空的 json.RawMessage 收敛为带默认值的 JSON 字符串
+// （空值时用 fallback，避免写库出现 'null' 字面量触发 NOT NULL/DEFAULT 语义混乱）。
+func coalesceJSON(raw json.RawMessage, fallback string) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return fallback
+	}
+	return string(raw)
 }

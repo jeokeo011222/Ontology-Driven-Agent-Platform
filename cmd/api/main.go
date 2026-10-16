@@ -24,12 +24,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"odap/internal/action"
 	"odap/internal/api"
 	"odap/internal/api/handlers"
 	"odap/internal/api/middleware"
@@ -42,6 +44,7 @@ import (
 	"odap/internal/execution/outbox"
 	"odap/internal/harness"
 	"odap/internal/identity"
+	"odap/internal/llm"
 	"odap/internal/ontology/graphstore"
 	"odap/internal/platform/clock"
 	"odap/internal/platform/ids"
@@ -49,7 +52,10 @@ import (
 	"odap/internal/platform/pgxutil"
 	"odap/internal/platform/secretbox"
 	"odap/internal/platform/tenantctx"
+	"odap/internal/reasoning"
+	"odap/internal/registry"
 	seedpkg "odap/internal/seed"
+	"odap/internal/toolruntime"
 )
 
 func main() {
@@ -197,17 +203,71 @@ func serve() error {
 		// 必须为 false，否则浏览器不会保存 Cookie，实时通道（SSE）将持续 401。
 		SecureCookies: appEnv != "development",
 	}
+	// 工具目录统一真值来源：版本解析只认 PUBLISHED（DRAFT 不再挡住可用的
+	// 已发布版本）。此前 store.LatestToolVersion"取最新再看状态"的语义已删除。
+	deps.Catalog = registry.NewCatalogService(pool)
+	// 只读工具结果缓存（借鉴竞品 MCP 工具缓存）：ODAP_TOOL_RESULT_CACHE_TTL_SECONDS
+	// 默认 60；<=0 为禁用态（Get 恒未命中，行为与无缓存完全一致）。
+	cacheTTLSeconds := 60
+	if raw := os.Getenv("ODAP_TOOL_RESULT_CACHE_TTL_SECONDS"); raw != "" {
+		if n, perr := strconv.Atoi(raw); perr == nil {
+			cacheTTLSeconds = n
+		} else {
+			logger.Warn("ODAP_TOOL_RESULT_CACHE_TTL_SECONDS 非法，使用默认 60 秒", "raw", raw)
+		}
+	}
+	deps.ToolCache = toolruntime.NewResultCache(time.Duration(cacheTTLSeconds) * time.Second)
 	// 生成类端点（本体/Agent/工具/工作流自动生成）使用独立网关：
 	// 只接受真实 HTTP 端点，避免落到 MockProvider 产出伪造内容。
 	// 注意：*llm.Gateway 为 nil 时不能赋给接口（会得到非 nil 接口包裹 nil 指针），
 	// 因此显式判空后再赋值；未装配时生成端点 fail-closed。
-	if gw := buildGenerationGateway(ctx, pool, logger, secretCipher); gw != nil {
+	if gw := llm.BuildGenerationGateway(ctx, pool, logger, secretCipher); gw != nil {
 		deps.LLM = gw
 	}
 	deps.DocsRoot = env("ODAP_DOCS_ROOT", "docs/资料")
 	// 上传文档落盘根目录（AI 自动生成的本地文件来源）。与只读的制度文档语料目录
 	// 分离，否则用户上传会写到 :ro 挂载上并直接失败。
 	deps.UploadsRoot = env("ODAP_UPLOAD_ROOT", "var/uploads")
+
+	// ── 模块 A：企业知识问答本体 ──
+	// 嵌入点名模型（Model Registry 已登记且声明 Embeddings 能力的 ModelID）。
+	// 留空时知识文档上传仍可解析分块，但摄取任务创建直接失败（fail-closed）。
+	deps.KBEmbeddingModel = os.Getenv("ODAP_KB_EMBEDDING_MODEL")
+
+	// ── 模块 B：推理引擎 ──
+	// 进程内直调（HTTP handlers）+ 独立 gRPC 监听（对外契约，语义对齐 OxiRS）。
+	reasoningSvc := reasoning.NewService(graphStore, pool, logger)
+	grpcPort := env("ODAP_REASON_GRPC_PORT", "9091")
+	if grpcPort != "" {
+		stopGRPC, gerr := reasoning.Serve(":"+grpcPort, reasoningSvc, logger)
+		if gerr != nil {
+			logger.Error("推理引擎 gRPC 监听失败（HTTP 服务不受影响，进程内调用仍可用）",
+				"error", gerr.Error())
+		} else {
+			defer stopGRPC()
+			logger.Info("reasoning grpc listening", "addr", ":"+grpcPort)
+		}
+	}
+
+	// ── 模块 D：动作记录器（PROV-O 溯源 + 相似检索嵌入）──
+	// Embed 适配器桥接 Gateway.Embed（点名 KBEmbeddingModel）；未配置嵌入模型
+	// 时所有动作 embed_status=SKIPPED（显式标记，绝不静默）。
+	var embedFn action.EmbedFn
+	if deps.LLM != nil && deps.KBEmbeddingModel != "" {
+		if genGW, ok := deps.LLM.(*llm.Gateway); ok {
+			embedFn = func(ctx context.Context, tenantID ids.ID, texts []string) ([][]float32, error) {
+				resp, eerr := genGW.Embed(ctx, tenantID, llm.EmbeddingRequest{
+					TenantID: tenantID, ModelID: deps.KBEmbeddingModel,
+					Texts: texts, IdempotencyKey: ids.New().String(),
+				})
+				if eerr != nil {
+					return nil, eerr
+				}
+				return resp.Vectors, nil
+			}
+		}
+	}
+	deps.Actions = action.NewRecorder(pool, graphStore, embedFn, deps.KBEmbeddingModel)
 
 	// ERP 集成：优先接入真实用友 NC65；只有显式配置了 MOCK_ERP_BASE_URL
 	// 时才装配 Mock ERP（绝不作为默认兜底）。两者都未配置时 ERP 保持未装配，
@@ -238,9 +298,10 @@ func serve() error {
 	}
 
 	router := api.NewRouter(deps, api.Options{
-		Logger:   logger,
-		Resolver: resolver,
-		CORS:     corsCfg,
+		Logger:    logger,
+		Resolver:  resolver,
+		CORS:      corsCfg,
+		Reasoning: reasoningSvc,
 	})
 
 	// 开发环境：启动 Outbox→SSE 桥接，使实时通道有真实事件来源。

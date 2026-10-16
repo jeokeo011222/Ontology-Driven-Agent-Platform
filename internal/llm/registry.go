@@ -197,6 +197,7 @@ type capabilitiesJSON struct {
 	NativeSchema     bool `json:"native_schema"`
 	SupportsSeed     bool `json:"supports_seed"`
 	SupportsTools    bool `json:"supports_tools"`
+	Embeddings       bool `json:"embeddings"`
 	MaxContextTokens int  `json:"max_context_tokens"`
 }
 
@@ -219,6 +220,7 @@ func decodeCapabilitiesJSON(raw []byte) (ProviderCapabilities, error) {
 		NativeSchema:     c.NativeSchema,
 		SupportsSeed:     c.SupportsSeed,
 		SupportsTools:    c.SupportsTools,
+		Embeddings:       c.Embeddings,
 		MaxContextTokens: c.MaxContextTokens,
 	}, nil
 }

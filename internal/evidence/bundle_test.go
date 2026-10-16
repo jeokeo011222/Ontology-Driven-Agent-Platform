@@ -123,3 +123,34 @@ func TestVerifyBundleDetectsTamper(t *testing.T) {
 		t.Fatalf("nil bundle 应返回 CodeEvidenceIntegrityBroken，得到 %v", err)
 	}
 }
+
+func TestBuildBundle_DecisionTimelineFields(t *testing.T) {
+	tid := ids.New()
+	rid := ids.New()
+	now := time.Now()
+
+	// 合法：根记录（QUERY，无 tool_name）+ 步骤记录（TOOL + tool_name）。
+	ok := []EvidenceItem{
+		{Type: "SOURCE_FACT", SourceType: "erp", ContentDigest: "d1",
+			DecisionType: "QUERY", TaskID: "task-1"},
+		{Type: "SOURCE_FACT", SourceType: "erp", ContentDigest: "d2",
+			DecisionType: "TOOL", TaskID: "task-1", ToolName: "sparql_query"},
+	}
+	if _, err := BuildBundle(tid, rid, ok, now); err != nil {
+		t.Fatalf("合法的时间轴字段不应被拒绝: %v", err)
+	}
+
+	// decision_type 不在词表内 → 拒绝（fail-closed）。
+	bad := []EvidenceItem{{Type: "X", SourceType: "s", ContentDigest: "d",
+		DecisionType: "MAGIC"}}
+	if _, err := BuildBundle(tid, rid, bad, now); err == nil {
+		t.Fatal("词表外 decision_type 应被拒绝")
+	}
+
+	// 步骤记录（tool_name 非空）未标注 decision_type → 拒绝。
+	missing := []EvidenceItem{{Type: "X", SourceType: "s", ContentDigest: "d",
+		TaskID: "task-1", ToolName: "sparql_query"}}
+	if _, err := BuildBundle(tid, rid, missing, now); err == nil {
+		t.Fatal("tool_name 非空但缺 decision_type 应被拒绝")
+	}
+}

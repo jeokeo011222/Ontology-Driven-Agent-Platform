@@ -2,15 +2,16 @@
 //
 // 职责（第六篇 §6.2/§6.3）：按四类调度队列（执行/恢复/对账/取消收敛）原子领取
 // Run，经 harness.Machine 在租约 fencing 下推进状态，并通过 transactional
-// outbox 发布事件。
+// outbox 发布事件；对绑定了 Agent 版本的 Run，由步进执行器（step_executor.go）
+// 真实推进一次执行：READ 工具真实执行 + 受治理模型调用（用量入账）+ 证据落库。
 //
 // 环境变量：ODAP_DATABASE_URL（或 DATABASE_URL）、WORKER_CONCURRENCY（默认 4）、
-// WORKER_LEASE_SECONDS（默认 30）、LOG_LEVEL。
-//
-// 说明：本进程是"真实调度骨架"——ClaimNext / Machine.Apply / Publisher.RunOnce
-// 均为真实调用（非 sleep 桩）；具体的步骤执行（模型调用、工具执行、ERP 网关）
-// 由后续按 Run 状态分派的执行器补齐，本骨架以 LeaseAcquired 簿记事件证明
-// 状态机与租约写入链路可用。
+// WORKER_LEASE_SECONDS（默认 30）、LOG_LEVEL、ODAP_SECRET_MASTER_KEY（模型端点
+// 密钥解密；未配置时 credential_ref 路径仍可用）、GRAPHSTORE_*（SHACL 工具需要）、
+// MOCK_ERP_BASE_URL / ODAP_NC65_*（ERP 类工具需要；未配置时相应工具 fail-closed）、
+// WORKER_INGEST_CONCURRENCY（知识摄取并发，默认 2）、ODAP_KB_EMBEDDING_MODEL
+// （知识分块嵌入点名模型；未配置时 EMBED 任务执行期 fail-closed）、
+// ODAP_UPLOAD_ROOT（仅审计溯源提示；分块内容读自 kb.chunks，不依赖该卷）。
 package main
 
 import (
@@ -18,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -27,14 +29,27 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"odap/internal/action"
+	"odap/internal/agent"
+	"odap/internal/api/handlers"
+	"odap/internal/api/store"
+	"odap/internal/audit"
+	"odap/internal/erp/adapters/mock"
+	"odap/internal/erp/adapters/nc65"
+	"odap/internal/evidence"
 	"odap/internal/execution/outbox"
 	"odap/internal/harness"
+	"odap/internal/knowledge"
+	"odap/internal/llm"
+	"odap/internal/ontology/graphstore"
 	"odap/internal/platform/clock"
 	"odap/internal/platform/ids"
 	"odap/internal/platform/logging"
 	"odap/internal/platform/pgxutil"
 	"odap/internal/platform/runstate"
-	"odap/internal/platform/tenantctx"
+	"odap/internal/platform/secretbox"
+	"odap/internal/registry"
+	"odap/internal/toolruntime"
 )
 
 func main() {
@@ -89,8 +104,125 @@ func run() error {
 	host, _ := os.Hostname()
 	base := fmt.Sprintf("worker:%s:%d", host, os.Getpid())
 
+	// ---- 模型端点密钥（可选）：未配置主密钥时界面录入的 api-key 不可解，
+	// credential_ref 环境变量引用路径不受影响（与 cmd/api 同一 fail-closed 语义）。
+	secretCipher, err := secretbox.NewFromEnv(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("凭据主密钥 ODAP_SECRET_MASTER_KEY 无效：%w", err)
+	}
+	if secretCipher == nil {
+		logger.Warn("未配置 ODAP_SECRET_MASTER_KEY：密文 credential 引用将无法解密（fail-closed）")
+	}
+
+	// ---- 模型网关（与 cmd/api 共用唯一装配实现；只接受真实 HTTP 端点）----
+	// 为 nil 时步进执行器对模型步骤 fail-closed（RunFailed 并说明原因）。
+	gw := llm.BuildGenerationGateway(ctx, pool, logger, secretCipher)
+
+	// ---- 图存储（可选）：SHACL 类工具执行需要；未配置时该类工具 UNAVAILABLE。
+	gsCfg, gerr := graphstore.EnvConfigFromOS()
+	if gerr != nil {
+		return gerr
+	}
+	gsCfg.Pool = pool
+	graphStore, gerr := graphstore.Open(gsCfg)
+	if gerr != nil {
+		return gerr
+	}
+
+	// ---- 工具执行依赖：复用 handlers.Handler 的真实执行器（唯一实现）----
+	st := store.New(pool, store.WithCipher(secretCipher))
+	// 模块 D：动作记录器（与 cmd/api 同装配语义）。嵌入桥接网关 Embed
+	//（点名 ODAP_KB_EMBEDDING_MODEL）；未配置嵌入模型时所有动作 embed_status=SKIPPED。
+	kbEmbeddingModel := env("ODAP_KB_EMBEDDING_MODEL", "")
+	var kbEmbedFn action.EmbedFn
+	if gw != nil && kbEmbeddingModel != "" {
+		kbEmbedFn = func(ctx context.Context, tenantID ids.ID, texts []string) ([][]float32, error) {
+			resp, eerr := gw.Embed(ctx, tenantID, llm.EmbeddingRequest{
+				TenantID: tenantID, ModelID: kbEmbeddingModel,
+				Texts: texts, IdempotencyKey: ids.New().String(),
+			})
+			if eerr != nil {
+				return nil, eerr
+			}
+			return resp.Vectors, nil
+		}
+	}
+	actRecorder := action.NewRecorder(pool, graphStore, kbEmbedFn, kbEmbeddingModel)
+	execHandler := handlers.New(handlers.Deps{
+		Store:      st,
+		Audit:      &audit.Recorder{Pool: pool, Clock: clk},
+		Logger:     logger,
+		DocsRoot:   env("ODAP_DOCS_ROOT", "docs/资料"),
+		GraphStore: graphStore,
+		Catalog:    registry.NewCatalogService(pool),
+		ToolCache:  toolruntime.NewResultCache(toolruntime.DefaultTTL),
+		Actions:    actRecorder,
+	})
+	// ERP 适配器（可选）：配置了 MOCK_ERP_BASE_URL 或 NC65 时装配（与 cmd/api 同规则）。
+	if baseURL := env("MOCK_ERP_BASE_URL", ""); baseURL != "" {
+		execHandler.SetERP(mock.NewHTTPAdapter(baseURL, &http.Client{Timeout: 10 * time.Second}), "default")
+	} else if cfg, enabled, cerr := nc65.ConfigFromEnv(os.Getenv); cerr == nil && enabled {
+		if ad, aerr := nc65.New(cfg); aerr == nil {
+			execHandler.SetERP(ad, "nc65")
+		}
+	}
+
+	executor := &stepExecutor{
+		pool:    pool,
+		machine: &harness.Machine{Pool: pool, Clock: clk},
+		handler: execHandler,
+		st:      st,
+		catalog: registry.NewCatalogService(pool),
+		// 技能展开：dependency_manifest.skills → 提示词小节（agent 包唯一生产接线点）。
+		skills: agent.SkillLoaderFunc(func(ctx context.Context, tenantID ids.ID, keys []string) ([]agent.SkillSnapshot, error) {
+			snaps, err := registry.NewPluginService(pool).ResolvePublishedSkillVersions(ctx, tenantID, keys)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]agent.SkillSnapshot, 0, len(snaps))
+			for _, s := range snaps {
+				out = append(out, agent.SkillSnapshot{
+					SkillKey: s.SkillKey, Name: s.Name, Version: s.Version,
+					VersionID: s.VersionID.String(), PromptFragment: s.PromptFragment,
+					ToolBindings: s.ToolBindings, ContentDigest: s.ContentDigest,
+				})
+			}
+			return out, nil
+		}),
+		evidence: &evidence.Store{Pool: pool},
+		gw:       gw,
+		logger:   logger,
+	}
+
 	logger.Info("worker started",
-		"concurrency", concurrency, "lease_seconds", leaseSeconds, "owner", base)
+		"concurrency", concurrency, "lease_seconds", leaseSeconds, "owner", base,
+		"llm_gateway", gw != nil)
+
+	// ---- 知识摄取回路（企业知识问答模块 A）：EMBED/EXTRACT 两个队列 ----
+	// 分块内容直接读 kb.chunks（上传时已同步落库），不依赖 uploads 卷；
+	// source_path 仅审计溯源。嵌入模型缺省时 EMBED 任务在执行期 fail-closed。
+	kbUploadsRoot := env("ODAP_UPLOAD_ROOT", "uploads")
+	ingestConcurrency := envInt("WORKER_INGEST_CONCURRENCY", 2)
+	if ingestConcurrency < 1 {
+		ingestConcurrency = 1
+	}
+	kbRunner := &knowledge.Runner{
+		Pool:           pool,
+		Graph:          graphStore,
+		EmbeddingModel: kbEmbeddingModel,
+		Logger:         logger,
+		Actions:        actRecorder,
+	}
+	if gw != nil {
+		// 网关可用时同一实例同时提供 Embed/Complete 能力（镜像 cmd/api 装配）。
+		kbRunner.Embedder = gw
+		kbRunner.Completer = gw
+	} else {
+		logger.Warn("未装配 LLM 网关：知识摄取任务（EMBED/EXTRACT）将 fail-closed")
+	}
+	logger.Info("ingest loop configured",
+		"concurrency", ingestConcurrency, "uploads_root", kbUploadsRoot,
+		"embedding_model", kbEmbeddingModel)
 
 	var wg sync.WaitGroup
 	for i := 0; i < concurrency; i++ {
@@ -98,13 +230,26 @@ func run() error {
 		owner := fmt.Sprintf("%s:%d", base, i)
 		go func(owner string) {
 			defer wg.Done()
-			workerLoop(ctx, pool, clk, owner, time.Duration(leaseSeconds)*time.Second, logger)
+			workerLoop(ctx, pool, clk, owner, time.Duration(leaseSeconds)*time.Second, logger, executor)
 		}(owner)
 	}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		publisherLoop(ctx, pool, clk, base+":pub", logger)
+	}()
+	// 知识摄取循环：并发领取 kb.ingest_jobs（SKIP LOCKED 去重），租约内分批执行。
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		kbRunner.IngestJobLoop(ctx, func(ctx context.Context) []ids.ID {
+			tenants, err := activeTenantIDs(ctx, pool)
+			if err != nil {
+				logger.Warn("ingest: list tenants failed", "error", err)
+				return nil
+			}
+			return tenants
+		}, ingestConcurrency)
 	}()
 
 	<-ctx.Done()
@@ -114,10 +259,10 @@ func run() error {
 	return nil
 }
 
-// workerLoop 是单个 Worker 的调度循环：四队列依次领取 → 状态机簿记 → 续租。
-func workerLoop(ctx context.Context, pool *pgxpool.Pool, clk clock.Clock, owner string, leaseTTL time.Duration, logger *slog.Logger) {
+// workerLoop 是单个 Worker 的调度循环：四队列依次领取 → 步进执行 → 状态簿记。
+func workerLoop(ctx context.Context, pool *pgxpool.Pool, clk clock.Clock, owner string,
+	leaseTTL time.Duration, logger *slog.Logger, executor *stepExecutor) {
 	sched := &harness.Scheduler{Pool: pool, Clock: clk, Owner: owner, LeaseTTL: leaseTTL}
-	machine := &harness.Machine{Pool: pool, Clock: clk}
 
 	// 四队列优先级：取消收敛 > 对账 > 恢复 > 正常（避免取消/对账饥饿）。
 	classes := []runstate.SchedulingClass{
@@ -156,7 +301,7 @@ func workerLoop(ctx context.Context, pool *pgxpool.Pool, clk clock.Clock, owner 
 					continue
 				}
 				claimedAny = true
-				advanceRun(ctx, machine, sched, owner, claimed, logger)
+				executor.execute(ctx, sched, claimed)
 				break // 本轮该租户已领取一个任务，进入下一租户
 			}
 		}
@@ -172,31 +317,6 @@ func workerLoop(ctx context.Context, pool *pgxpool.Pool, clk clock.Clock, owner 
 			}
 		}
 	}
-}
-
-// advanceRun 在租约 fencing 下对已领取 Run 做状态簿记，并续租。
-func advanceRun(ctx context.Context, machine *harness.Machine, sched *harness.Scheduler,
-	owner string, claimed *harness.ClaimedRun, logger *slog.Logger) {
-	// 后台 Worker 必须携带可信租户上下文（第十六篇 §5.4）。
-	runCtx := tenantctx.WithIdentity(ctx, tenantctx.System(claimed.TenantID))
-
-	// LeaseAcquired 是可租用状态下的自环簿记（第六篇 §14.2）：真实驱动一次
-	// "读状态 → 纯函数判定 → 条件 UPDATE（fencing）"写入。
-	facts := harness.TransitionFacts{LeaseValid: true}
-	if err := machine.Apply(runCtx, claimed.RunID, harness.EventLeaseAcquired, facts); err != nil {
-		logger.Warn("apply lease-acquired transition failed",
-			"run_id", claimed.RunID.String(), "status", claimed.Status, "error", err)
-		return
-	}
-	if _, err := sched.RenewLease(runCtx, claimed.TenantID, claimed.RunID, owner, claimed.LeaseEpoch); err != nil {
-		logger.Warn("renew lease failed; stop advancing",
-			"run_id", claimed.RunID.String(), "error", err)
-		return
-	}
-	logger.Info("claimed run",
-		"run_id", claimed.RunID.String(), "status", claimed.Status,
-		"tenant", claimed.TenantID.String(), "epoch", claimed.LeaseEpoch,
-		"attempt", claimed.AttemptCount)
 }
 
 // publisherLoop 周期性把 outbox 事件发布到 Sink（第十篇 §5.4 两段式）。

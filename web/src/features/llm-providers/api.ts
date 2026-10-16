@@ -235,6 +235,8 @@ export interface ModelCapabilities {
   native_schema: boolean;
   supports_seed: boolean;
   supports_tools: boolean;
+  /** 向量嵌入能力（/embeddings）：知识库文档嵌入（kb.ingest）路由必需。 */
+  embeddings?: boolean;
   max_context_tokens: number;
 }
 

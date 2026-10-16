@@ -51,13 +51,13 @@
           "erp.expense.query",
           "erp.vendor.lookup",
           "kb.policy.search",
-          "doc.receipt.extract",
-          "budget.check",
+          "knowledge-retrieval",
           "erp.expense.decide",
           "audit.ledger.append"
         ],
+        "skills": ["enterprise-knowledge-qa"],
         "models": [],
-        "notes": "READ 类工具可直接调用；erp.expense.decide 为 EXTERNAL_WRITE，需经人工复核门禁后才可执行。本版本未声明任何模型（内置 mock 供应商已下线）：请先在「模型与推理」录入真实模型端点并登记模型版本档案，再在此声明 models，否则该 Agent 的推理调用会以 UNAVAILABLE 明确失败，不会回退到模拟端点。"
+        "notes": "READ 类工具可直接调用；erp.expense.decide 为 EXTERNAL_WRITE，需经人工复核门禁后才可执行。技能 enterprise-knowledge-qa 在运行期经 dependency_manifest.skills 展开（CompileSkills 取 PUBLISHED 版本，fail-closed：技能缺失或未发布则计划编译失败）。本版本未声明任何模型（内置 mock 供应商已下线）：请先在「模型与推理」录入真实模型端点并登记模型版本档案，再在此声明 models，否则该 Agent 的推理调用会以 UNAVAILABLE 明确失败，不会回退到模拟端点。"
       }
     }
   },

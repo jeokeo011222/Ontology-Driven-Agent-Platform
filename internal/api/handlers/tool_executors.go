@@ -21,12 +21,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"odap/internal/action"
 	"odap/internal/api/store"
 	"odap/internal/docingest"
 	"odap/internal/erp"
@@ -72,12 +72,13 @@ func parseExecutionConfig(raw json.RawMessage) (executionConfig, error) {
 	return cfg, nil
 }
 
-// executeToolInvocation 执行一次工具调用并返回真实输出。
+// ExecuteToolInvocation 执行一次工具调用并返回真实输出（导出给 worker 步进
+// 执行器复用——全部 9 类真实适配器只有这一份实现，禁止再造第二份）。
 //
 // 参数：invID 用于 ERP 写操作的幂等/审计关联；args 已通过 input_schema 校验；
 // approval 凭据（__approval_id / __authorization_decision_id）仅由审批确认链路注入。
-func (h *Handler) executeToolInvocation(
-	r *http.Request,
+func (h *Handler) ExecuteToolInvocation(
+	ctx context.Context,
 	id tenantctx.Identity,
 	rec *store.ToolVersionRecord,
 	invID string,
@@ -87,11 +88,44 @@ func (h *Handler) executeToolInvocation(
 	if err != nil {
 		return nil, err
 	}
-	ctx := r.Context()
 
+	out, execErr := h.dispatchToolAdapter(ctx, id, rec, invID, args, cfg)
+	// 模块 D：工具调用动作留痕（旁路观测：成败都记，绝不改变返回值语义）。
+	inDigest, _ := json.Marshal(args)
+	var outDigestStr string
+	if execErr == nil {
+		if outBytes, merr := json.Marshal(out); merr == nil {
+			outDigestStr = sha256Hex(outBytes)
+		}
+	}
+	outcome := action.OutcomeSuccess
+	if execErr != nil {
+		outcome = action.OutcomeError
+	}
+	h.RecordActionForFlow(ctx, id.TenantID, action.Input{
+		Type:         action.TypeTool,
+		Title:        "工具调用：" + rec.ToolKey,
+		Summary:      "adapter=" + cfg.Adapter + " invocation=" + invID,
+		InputDigest:  sha256Hex(inDigest),
+		OutputDigest: outDigestStr,
+		Outcome:      outcome,
+		ActorName:    id.SubjectID.String(),
+	})
+	return out, execErr
+}
+
+// dispatchToolAdapter 是 ExecuteToolInvocation 的适配器分发体（独立成函数便于动作留痕包裹）。
+func (h *Handler) dispatchToolAdapter(
+	ctx context.Context,
+	id tenantctx.Identity,
+	rec *store.ToolVersionRecord,
+	invID string,
+	args map[string]any,
+	cfg executionConfig,
+) (map[string]any, error) {
 	switch cfg.Adapter {
 	case "mock-erp", "nc65":
-		return h.execErpTool(r, id, cfg, invID, args)
+		return h.execErpTool(ctx, id, cfg, invID, args)
 	case "docingest":
 		return h.execDocingestTool(cfg, args)
 	case "shacl":
@@ -102,8 +136,11 @@ func (h *Handler) executeToolInvocation(
 		return h.execLLMTool(ctx, id, invID, args)
 	case "mock-retriever":
 		return h.execRetrieverTool(cfg, args)
+	case "knowledge-retrieval":
+		// 企业知识库混合检索（READ）：pgvector 余弦 + trigram 词项 + RRF 融合。
+		return h.execKnowledgeRetrievalTool(ctx, id, args)
 	case "ledger", "audit-chain":
-		return h.execAuditTool(r, id, rec, invID, args)
+		return h.execAuditTool(ctx, id, rec, invID, args)
 	case "script":
 		// WASM 脚本工具：wazero 内纯计算执行，无任何 host 能力（文件/网络），
 		// 固定只读；登记侧已强制 effect_class=READ（tool_executors_script.go）。
@@ -132,7 +169,7 @@ func (h *Handler) executeToolInvocation(
 // nc65     → 租户 DB 连接（erp_connections）优先 → env 传统装配显式回落。
 // object_type / operation 优先取 args（nc65 工具由调用方指定），回落执行契约。
 func (h *Handler) execErpTool(
-	r *http.Request,
+	ctx context.Context,
 	id tenantctx.Identity,
 	cfg executionConfig,
 	invID string,
@@ -143,7 +180,7 @@ func (h *Handler) execErpTool(
 		return nil, errors.E(errors.CodeUnavailable,
 			"工具执行契约缺少 object_type（ERP 对象类型），且调用参数未提供，无法派发 ERP 调用")
 	}
-	port, connID, source, err := h.resolveErpPortForAdapter(r, cfg.Adapter)
+	port, connID, source, err := h.resolveErpPortForAdapter(ctx, cfg.Adapter)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +196,7 @@ func (h *Handler) execErpTool(
 			return nil, errors.E(errors.CodeInvalidArgument,
 				"ERP 单对象读取需要对象 id（args.id / object_id / expense_id）")
 		}
-		res, err := port.GetObject(r.Context(), erp.GetObjectRequest{
+		res, err := port.GetObject(ctx, erp.GetObjectRequest{
 			TenantID:     tenantID,
 			ConnectionID: erp.ConnectionID(connID),
 			ObjectType:   objectType,
@@ -197,7 +234,7 @@ func (h *Handler) execErpTool(
 		if ps, ok := args["page_size"].(float64); ok && ps > 0 && ps <= 200 {
 			pageSize = int(ps)
 		}
-		res, err := port.QueryObjects(r.Context(), erp.QueryObjectsRequest{
+		res, err := port.QueryObjects(ctx, erp.QueryObjectsRequest{
 			TenantID:     tenantID,
 			ConnectionID: erp.ConnectionID(connID),
 			ObjectType:   objectType,
@@ -253,7 +290,7 @@ func (h *Handler) execErpTool(
 			return nil, errors.E(errors.CodeInvalidArgument, "ERP 写操作缺少目标对象 id")
 		}
 		payloadJSON, _ := json.Marshal(payload)
-		res, err := port.Execute(r.Context(), erp.ExecuteRequest{
+		res, err := port.Execute(ctx, erp.ExecuteRequest{
 			TenantID:                tenantID,
 			ConnectionID:            erp.ConnectionID(connID),
 			OperationID:             erp.OperationID("toolinv-" + invID),
@@ -288,9 +325,9 @@ func (h *Handler) execErpTool(
 }
 
 // resolveErpPortForAdapter 按执行适配器解析 ERP Port（来源显式标注，绝不混合）。
-func (h *Handler) resolveErpPortForAdapter(r *http.Request, adapter string) (erp.Port, string, string, error) {
+func (h *Handler) resolveErpPortForAdapter(ctx context.Context, adapter string) (erp.Port, string, string, error) {
 	if adapter == "nc65" {
-		return h.resolveErpPort(r, "nc65")
+		return h.resolveErpPort(ctx, "nc65")
 	}
 	// mock-erp：演示 ERP 模拟器（mockerp 容器是真实 HTTP 服务），只经 env 装配。
 	if h.deps.ERP == nil {
@@ -585,7 +622,7 @@ func (h *Handler) execRetrieverTool(cfg executionConfig, args map[string]any) (m
 
 // execAuditTool 经审计记录器向哈希链追加真实审计事件。
 func (h *Handler) execAuditTool(
-	r *http.Request,
+	ctx context.Context,
 	id tenantctx.Identity,
 	rec *store.ToolVersionRecord,
 	invID string,
@@ -602,7 +639,7 @@ func (h *Handler) execAuditTool(
 			return nil, errors.E(errors.CodeInvalidArgument, "args.run_id 不是合法 id")
 		}
 	}
-	h.recordAudit(r, id, "ToolAuditAppend", action, "SUCCESS", resType, target, runID,
+	h.recordAuditCtx(ctx, id, "ToolAuditAppend", action, "SUCCESS", resType, target, runID, "",
 		map[string]any{
 			"tool_key":      rec.ToolKey,
 			"invocation_id": invID,

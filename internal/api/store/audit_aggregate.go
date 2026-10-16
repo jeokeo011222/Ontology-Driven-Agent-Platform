@@ -698,6 +698,40 @@ func (s *Store) AdminConnectors(ctx context.Context, limit int, cursor, q string
 	return res, nil
 }
 
+// GetActiveConnector 按 id 返回当前租户已启用（ACTIVE）的连接器详情。
+// 与 AdminConnectors 同一真源：registry.plugin_installations JOIN registry.plugins。
+// 不存在或未启用 → CodeNotFound（"不存在"与"未启用"对调用方是同一件事）。
+func (s *Store) GetActiveConnector(ctx context.Context, connectorID string) (map[string]any, error) {
+	if connectorID == "" {
+		return nil, errors.E(errors.CodeInvalidArgument, "连接器 id 必填")
+	}
+	if _, err := ids.Parse(connectorID); err != nil {
+		return nil, errors.E(errors.CodeInvalidArgument, "连接器 id 不合法")
+	}
+	var out map[string]any
+	err := s.TenantTx(ctx, func(tx pgx.Tx) error {
+		rows, err := queryMaps(ctx, tx, `
+            SELECT p.id::text AS id, p.plugin_key, p.name, p.plugin_kind,
+                   i.installation_state, i.installed_at
+              FROM registry.plugin_installations i
+              JOIN registry.plugins p ON p.id = i.plugin_id
+             WHERE p.id = $1 AND i.installation_state = 'ACTIVE'
+             LIMIT 1`, connectorID)
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return errors.Ef(errors.CodeNotFound, "连接器 %s 不存在或未启用", connectorID)
+		}
+		out = rows[0]
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // OpsAlerts 返回运维告警视图：死信、失败运行、需人工复核运行、未知外部操作。
 func (s *Store) OpsAlerts(ctx context.Context) (map[string]any, error) {
 	out := map[string]any{}
@@ -733,52 +767,6 @@ func (s *Store) OpsAlerts(ctx context.Context) (map[string]any, error) {
 		return nil, err
 	}
 	return out, nil
-}
-
-// Releases 返回质量门禁决策记录（发布治理视图）。
-//
-// 排序键为 <decided_at DESC, decision_id DESC>：时间倒序是业务序，decision_id 兜底
-// 保证唯一。游标用 EncodeCursor(decided_at, decision_id) 记录时间+键；已去掉原先
-// 写死的 LIMIT 200（那是"假分页"：超出部分静默不可达）。
-func (s *Store) Releases(ctx context.Context, limit int, cursor, q string) (*ListResult, error) {
-	cur, err := DecodeCursor(cursor)
-	if err != nil {
-		return nil, err
-	}
-	var fromTime, fromKey any
-	if cur != nil {
-		fromTime = cur.Time
-		fromKey = cur.Key
-	}
-	res := &ListResult{Items: []map[string]any{}}
-	err = s.TenantTx(ctx, func(tx pgx.Tx) error {
-		rows, err := queryMaps(ctx, tx, `
-            SELECT decision_id::text AS id, evaluation_run_id::text AS evaluation_run_id,
-                   policy_revision, decision, reviewer_id, decided_at
-              FROM release_mgmt.quality_gate_decisions
-             WHERE ($1::timestamptz IS NULL OR (decided_at, decision_id) < ($1::timestamptz, $2::uuid))
-               AND ($3::text = '' OR decision ILIKE '%' || $3 || '%' OR policy_revision ILIKE '%' || $3 || '%')
-             ORDER BY decided_at DESC, decision_id DESC
-             LIMIT $4`, fromTime, fromKey, q, limit+1)
-		if err != nil {
-			return err
-		}
-		hasMore := len(rows) > limit
-		if hasMore {
-			rows = rows[:limit]
-		}
-		res.Items = rows
-		if hasMore && len(rows) > 0 {
-			if t, k, ok := keyedRow(rows[len(rows)-1], "decided_at", "id"); ok {
-				res.NextCursor = nextCursorOf(t, k, true)
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return res, nil
 }
 
 // firstInt 读取单行计数结果的 n 列。

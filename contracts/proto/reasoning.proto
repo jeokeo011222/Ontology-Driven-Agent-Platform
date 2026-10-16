@@ -1,0 +1,199 @@
+// ODAP 推理引擎（模块 B）gRPC 契约。
+//
+// 语义对齐 OxiRS-Reasoner 的六类推理入口，外加 SHACL 校验转发：
+//   - ForwardChain      正向链（物化）：把规则前提反复应用于事实集直至不动点
+//   - BackwardChain     反向链（目标驱动）：从目标出发沿规则回溯求证
+//   - IncrementalUpdate 增量更新：仅对新增事实做前提匹配，产出增量派生
+//   - RegisterRules     注册自定义规则（持久化于 reason.rules，kind=CUSTOM）
+//   - RemoveRules       移除自定义规则
+//   - Validate          SHACL 校验（转发 internal/ontology/shacl）
+//   - HealthCheck       健康探测
+//
+// 词法约定（TriplePattern / Triple / Goal 的 subject/predicate/object 均适用）：
+//   - 空串 ""        表示匿名变量（各出现位置相互独立，仅作通配）；
+//   - "?x" 形式      表示具名变量：同一规则内同名变量绑定为同一词项，
+//                    这是 premises 之间/前提与结论之间共享变量的唯一途径；
+//   - 其余字符串     表示常量词项：`"..."` 包裹为字面值、`_:label` 为空白节点、
+//                    其余按 IRI 处理。
+syntax = "proto3";
+
+package odap.reasoning.v1;
+
+option go_package = "odap/contracts/proto;reasoningpb";
+
+// Reasoning 是推理引擎的 gRPC 服务接口。
+service Reasoning {
+  // ForwardChain 正向链推理至不动点，派生三元组以 fact_kind=DERIVED 写回图存储。
+  rpc ForwardChain(ForwardChainRequest) returns (ForwardChainReply);
+  // BackwardChain 目标驱动的反向链，返回是否可证、证明路径与变量绑定。
+  rpc BackwardChain(BackwardChainRequest) returns (BackwardChainReply);
+  // IncrementalUpdate 对一批新增事实做增量推理，仅产出与新增相关的派生三元组。
+  rpc IncrementalUpdate(IncrementalUpdateRequest) returns (IncrementalUpdateReply);
+  // RegisterRules 批量注册自定义规则，逐条返回接受/拒绝结果（部分失败不影响其余）。
+  rpc RegisterRules(RegisterRulesRequest) returns (RegisterRulesReply);
+  // RemoveRules 按规则键移除自定义规则（内置规则不可移除）。
+  rpc RemoveRules(RemoveRulesRequest) returns (RemoveRulesReply);
+  // Validate 对命名图执行 SHACL 校验（转发 internal/ontology/shacl 引擎）。
+  rpc Validate(ValidateRequest) returns (ValidateReply);
+  // HealthCheck 探测推理引擎可用性并报告已加载规则数。
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckReply);
+}
+
+// TriplePattern 是三元组匹配模式；空串=匿名变量，"?x"=具名变量（见文件头词法约定）。
+message TriplePattern {
+  string subject = 1;   // 主语；空串/`?x` 为变量
+  string predicate = 2; // 谓语；空串/`?x` 为变量
+  string object = 3;    // 宾语；空串/`?x` 为变量
+}
+
+// Triple 是一条具体三元组（词法形式，见文件头词法约定；不携带变量）。
+message Triple {
+  string subject = 1;
+  string predicate = 2;
+  string object = 3;
+}
+
+// RuleDef 是一条规则定义（premises ⇒ conclusion）。
+message RuleDef {
+  string rule_key = 1;                // 租户内唯一键（UNIQUE(tenant_id, rule_key)）
+  string name = 2;                    // 人读名称
+  string kind = 3;                    // OWL2RL | RDFS | CUSTOM；注册端仅接受 CUSTOM
+  repeated TriplePattern premises = 4;   // 前提模式（合取）
+  repeated TriplePattern conclusion = 5; // 结论模式（同时实例化产出）
+  string description = 6;             // 说明
+}
+
+// Goal 是反向链的求证目标（各位置可为变量以获取绑定解）。
+message Goal {
+  string subject = 1;
+  string predicate = 2;
+  string object = 3;
+}
+
+// Binding 是一组变量绑定（变量名 → 词项词法）。
+message Binding {
+  map<string, string> values = 1;
+}
+
+// ProofStep 是证明路径上的一步规则应用。
+message ProofStep {
+  string rule_key = 1;                 // 应用的规则键
+  repeated TriplePattern premises = 2; // 已实例化的前提
+  Triple conclusion = 3;               // 实例化得出的结论
+}
+
+// ---------------------------------------------------------------------------
+// ForwardChain
+// ---------------------------------------------------------------------------
+
+message ForwardChainRequest {
+  string tenant_id = 1;        // 租户 UUID
+  string graph_iri = 2;        // 目标命名图 IRI（调用方视角）
+  repeated string rule_keys = 3; // 参与推理的规则键；空 = 全部启用规则
+  int32 max_iterations = 4;    // 迭代上限（≤0 时取默认 100；超限报「推理未收敛」）
+}
+
+message ForwardChainReply {
+  repeated Triple added_triples = 1; // 本次派生并写回的三元组
+  int64 derived_count = 2;           // 派生三元组总数
+  int32 iterations = 3;              // 实际迭代轮数
+  int64 duration_ms = 4;             // 总耗时（毫秒）
+}
+
+// ---------------------------------------------------------------------------
+// BackwardChain
+// ---------------------------------------------------------------------------
+
+message BackwardChainRequest {
+  string tenant_id = 1;
+  string graph_iri = 2;
+  Goal goal = 3;                 // 求证目标
+  repeated string rule_keys = 4; // 可用规则键；空 = 全部启用规则
+}
+
+message BackwardChainReply {
+  bool proved = 1;                  // 目标是否可证
+  repeated ProofStep proof_trace = 2; // 证明路径（规则应用序列）
+  repeated Binding bindings = 3;    // 目标含变量时的全部解
+}
+
+// ---------------------------------------------------------------------------
+// IncrementalUpdate
+// ---------------------------------------------------------------------------
+
+message IncrementalUpdateRequest {
+  string tenant_id = 1;
+  string graph_iri = 2;
+  repeated Triple added_triples = 3; // 新增事实（幂等写入图存储，fact_kind=ASSERTED）
+}
+
+message IncrementalUpdateReply {
+  repeated Triple derived_triples = 1; // 由新增事实触发的增量派生
+  int64 derived_count = 2;
+}
+
+// ---------------------------------------------------------------------------
+// RegisterRules / RemoveRules
+// ---------------------------------------------------------------------------
+
+message RegisterRulesRequest {
+  string tenant_id = 1;
+  repeated RuleDef rules = 2;
+}
+
+message RuleRejected {
+  string rule_key = 1; // 被拒绝的规则键
+  string reason = 2;   // 拒绝原因（键冲突/结构非法/保留前缀等）
+}
+
+message RegisterRulesReply {
+  repeated string accepted = 1;        // 接受的规则键
+  repeated RuleRejected rejected = 2;  // 拒绝明细
+}
+
+message RemoveRulesRequest {
+  string tenant_id = 1;
+  repeated string rule_keys = 2;
+}
+
+message RemoveRulesReply {
+  repeated string removed = 1;          // 成功移除的规则键
+  repeated RuleRejected not_removed = 2; // 未能移除的键及原因（不存在/内置规则）
+}
+
+// ---------------------------------------------------------------------------
+// Validate
+// ---------------------------------------------------------------------------
+
+message ValidateRequest {
+  string tenant_id = 1;
+  string graph_iri = 2;
+}
+
+// ValidateResult 是一条 SHACL 发现项摘要。
+message ValidateResult {
+  string shape_id = 1;   // 形状 IRI
+  string focus_node = 2; // 焦点节点
+  string path = 3;       // 谓词路径
+  string component = 4;  // 约束构件（MinCount/Datatype/…）
+  string severity = 5;   // Violation | Warning | Info
+  string message = 6;    // 人读描述
+}
+
+message ValidateReply {
+  bool conforms = 1;                  // 是否通过校验
+  repeated ValidateResult results = 2; // 发现项摘要
+}
+
+// ---------------------------------------------------------------------------
+// HealthCheck
+// ---------------------------------------------------------------------------
+
+message HealthCheckRequest {
+  string tenant_id = 1; // 可选：提供时统计该租户的自定义规则数
+}
+
+message HealthCheckReply {
+  string status = 1;   // SERVING | NOT_SERVING
+  int64 rules_loaded = 2; // 当前租户规则总数（内置 + 自定义）
+}

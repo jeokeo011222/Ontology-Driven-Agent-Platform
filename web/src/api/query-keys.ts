@@ -131,4 +131,30 @@ export const queryKeys = {
   admin: {
     overview: () => ['admin', 'overview'] as const,
   },
+
+  /* 知识问答本体（模块 A） */
+  knowledge: {
+    documents: () => ['knowledge', 'documents'] as const,
+    detail: (id: string) => ['knowledge', 'document', id] as const,
+  },
+
+  /* 推理引擎（模块 B） */
+  reasoning: {
+    rules: () => ['reasoning', 'rules'] as const,
+    runs: () => ['reasoning', 'runs'] as const,
+  },
+
+  /* A2A 协同（模块 C） */
+  a2a: {
+    remoteAgents: () => ['a2a', 'remote-agents'] as const,
+    agentCard: () => ['a2a', 'agent-card'] as const,
+    tasks: () => ['a2a', 'tasks'] as const,
+  },
+
+  /* 动作管理（模块 D） */
+  actions: {
+    list: () => ['actions', 'list'] as const,
+    detail: (id: string) => ['actions', 'detail', id] as const,
+    similar: (id: string) => ['actions', 'similar', id] as const,
+  },
 } as const;

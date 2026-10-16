@@ -262,5 +262,100 @@ func statusToError(endpoint string, status int, body []byte) error {
 	}
 }
 
+// embeddingRequest 是 OpenAI 兼容 /embeddings 协议的请求体。
+type embeddingRequest struct {
+	Model string   `json:"model"`
+	Input []string `json:"input"`
+}
+
+type embeddingResponse struct {
+	Model string `json:"model"`
+	Data  []struct {
+		Index     int       `json:"index"`
+		Embedding []float32 `json:"embedding"`
+	} `json:"data"`
+	Usage struct {
+		PromptTokens int `json:"prompt_tokens"`
+	} `json:"usage"`
+}
+
+// Embed 实现 EmbeddingProvider（OpenAI 兼容 POST {base_url}/embeddings）。
+//
+// 与 Complete 同样的治理边界：不重试、不换端点、不降级模型。维度校验在
+// Gateway.Embed 统一做（对照登记维度 fail-closed），这里只保证响应形状：
+// 供应商返回 data 为空、索引错乱或维度不一致，一律显式失败。
+func (p *HTTPProvider) Embed(ctx context.Context, req EmbeddingRequest) (EmbeddingResponse, error) {
+	model := p.modelID
+	if strings.TrimSpace(req.ModelID) != "" {
+		model = req.ModelID
+	}
+	if len(req.Texts) == 0 {
+		return EmbeddingResponse{}, errors.E(errors.CodeInvalidArgument, "llm: 嵌入请求不含任何文本")
+	}
+	payload, err := json.Marshal(embeddingRequest{Model: model, Input: req.Texts})
+	if err != nil {
+		return EmbeddingResponse{}, errors.Wrap(err, errors.CodeInternal, "llm: 编码嵌入请求失败")
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		p.baseURL+"/embeddings", bytes.NewReader(payload))
+	if err != nil {
+		return EmbeddingResponse{}, errors.Wrap(err, errors.CodeInternal, "llm: 构造嵌入请求失败")
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return EmbeddingResponse{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if err != nil {
+		if stderrors.Is(err, context.DeadlineExceeded) {
+			return EmbeddingResponse{}, errors.Ef(errors.CodeModelTimeout,
+				"llm: 读取嵌入响应超时（可用 %s 调整）", EnvHTTPTimeout)
+		}
+		return EmbeddingResponse{}, errors.Wrap(err, errors.CodeModelProviderError, "llm: 读取嵌入响应失败")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return EmbeddingResponse{}, statusToError(p.name, resp.StatusCode, raw)
+	}
+	var parsed embeddingResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return EmbeddingResponse{}, errors.Wrap(err, errors.CodeModelProviderError,
+			"llm: 嵌入响应不是合法 JSON")
+	}
+	if len(parsed.Data) != len(req.Texts) {
+		return EmbeddingResponse{}, errors.Ef(errors.CodeModelProviderError,
+			"llm: 嵌入响应条数不匹配（请求 %d 条，供应商返回 %d 条）", len(req.Texts), len(parsed.Data))
+	}
+	out := EmbeddingResponse{
+		Vectors:       make([][]float32, len(req.Texts)),
+		InputTokens:   parsed.Usage.PromptTokens,
+		ModelRevision: parsed.Model,
+		Raw:           raw,
+	}
+	for _, d := range parsed.Data {
+		if d.Index < 0 || d.Index >= len(out.Vectors) {
+			return EmbeddingResponse{}, errors.Ef(errors.CodeModelProviderError,
+				"llm: 嵌入响应索引越界（index=%d）", d.Index)
+		}
+		if len(d.Embedding) == 0 {
+			return EmbeddingResponse{}, errors.Ef(errors.CodeModelProviderError,
+				"llm: 嵌入响应第 %d 条为空向量", d.Index)
+		}
+		if out.Dimensions == 0 {
+			out.Dimensions = len(d.Embedding)
+		}
+		if len(d.Embedding) != out.Dimensions {
+			return EmbeddingResponse{}, errors.Ef(errors.CodeModelProviderError,
+				"llm: 嵌入响应维度不一致（第 %d 条 %d 维，此前 %d 维）", d.Index, len(d.Embedding), out.Dimensions)
+		}
+		out.Vectors[d.Index] = d.Embedding
+	}
+	return out, nil
+}
+
 // 编译期断言：HTTPProvider 满足 Provider 接口。
 var _ Provider = (*HTTPProvider)(nil)

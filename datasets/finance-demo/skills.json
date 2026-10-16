@@ -1,0 +1,17 @@
+[
+  {
+    "id": "d0000091-0000-4000-8000-000000000091",
+    "skill_key": "enterprise-knowledge-qa",
+    "name": "企业知识问答",
+    "description": "基于知识库检索的问答纪律：回答必须锚定检索命中并逐条标注引用，检索无命中时明确说明知识库暂无相关内容",
+    "domain": "knowledge",
+    "is_builtin": true,
+    "version": {
+      "id": "e0000091-0000-4000-8000-000000000091",
+      "version": "0.1.0",
+      "status": "PUBLISHED",
+      "prompt_fragment": "## 企业知识问答纪律\n你回答知识类问题时必须遵守：\n1. 先调用 knowledge-retrieval 工具检索知识库，再基于检索到的知识分块作答。\n2. 回答必须基于检索到的知识分块，逐条标注引用，格式为 [文档标题#分块n]（n 为 chunk_index）。\n3. 检索无命中时，明确说明知识库暂无相关内容，禁止编造；不要用常识脑补企业内部规则。\n4. 检索结果带有 warnings 时（如向量检索降级），在回答末尾以一句话如实告知。\n5. 引用多个分块时逐条列出依据，不混写来源。",
+      "tool_bindings": ["knowledge-retrieval"]
+    }
+  }
+]

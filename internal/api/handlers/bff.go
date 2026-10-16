@@ -200,25 +200,4 @@ func (h *Handler) OpsAlerts(w http.ResponseWriter, r *http.Request) {
 }
 
 // Releases 处理 GET /api/v1/releases（cursor 分页 + 可选关键字）。
-func (h *Handler) Releases(w http.ResponseWriter, r *http.Request) {
-	if _, err := h.identity(r); err != nil {
-		h.fail(w, r, err)
-		return
-	}
-	if h.deps.Store == nil {
-		h.fail(w, r, unavailable("持久化适配器未装配"))
-		return
-	}
-	limit, err := limitParam(r, 10)
-	if err != nil {
-		h.fail(w, r, err)
-		return
-	}
-	res, err := h.deps.Store.Releases(r.Context(), limit,
-		r.URL.Query().Get("cursor"), r.URL.Query().Get("q"))
-	if err != nil {
-		h.fail(w, r, err)
-		return
-	}
-	h.writeJSON(w, http.StatusOK, res)
-}
+// 真源是 release_mgmt.releases（发布实体，000040 起）；实现见 handlers/releases.go。

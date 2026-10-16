@@ -36,6 +36,22 @@ type EvidenceItem struct {
 	StorageURI    string
 	Summary       string
 	Metadata      json.RawMessage
+
+	// 时间轴三列（000039）：决策一等节点模型的落点。
+	// DecisionType 空表示暂未分类；ToolName 空表示根记录、非空表示步骤记录。
+	DecisionType string
+	TaskID       string
+	ToolName     string
+}
+
+// decisionTypes 是决策类型词表（借鉴竞品五分类，fail-closed 收口）。
+// 迁移 000039 的 CHECK 约束持有同一份词表——两侧必须同步改。
+var decisionTypes = map[string]bool{
+	"QUERY":  true, // 问答
+	"UPDATE": true, // 知识更新
+	"INFER":  true, // 规则推断
+	"ACTION": true, // SOP/技能执行
+	"TOOL":   true, // 工具调用（步骤记录）
 }
 
 // Bundle 是一次运行（Run）的证据包。
@@ -98,6 +114,14 @@ func BuildBundle(tenantID, runID ids.ID, items []EvidenceItem, now time.Time) (*
 		if it.ContentDigest == "" {
 			return nil, errors.Ef(errors.CodeEvidenceIntegrityBroken,
 				"evidence: 第 %d 个分项缺少 content_digest（Type=%s SourceRef=%s）", i, it.Type, it.SourceRef)
+		}
+		if it.DecisionType != "" && !decisionTypes[it.DecisionType] {
+			return nil, errors.Ef(errors.CodeValidationFailed,
+				"evidence: 第 %d 个分项的 decision_type %q 不在词表内（QUERY/UPDATE/INFER/ACTION/TOOL）", i, it.DecisionType)
+		}
+		if it.ToolName != "" && it.DecisionType == "" {
+			return nil, errors.Ef(errors.CodeValidationFailed,
+				"evidence: 第 %d 个分项填写了 tool_name 但未分类 decision_type（步骤记录必须标注 TOOL）", i)
 		}
 	}
 	ordered := sortItems(items)

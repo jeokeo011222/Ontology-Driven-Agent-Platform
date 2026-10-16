@@ -97,10 +97,10 @@ func TestMask(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"", ""},
 		{"short", "****"},
-		{"abcdefg", "****"},                 // 7 < 8
+		{"abcdefg", "****"}, // 7 < 8
 		{"sk-43765f3f9772473783715644f8926e22", "sk-****6e22"},
-		{"abcdefgh", "****efgh"},            // 无 '-' 前缀则为空
-		{"ab-abcdefgh", "ab-****efgh"},      // 下标 2 处的 '-' 被采用
+		{"abcdefgh", "****efgh"},       // 无 '-' 前缀则为空
+		{"ab-abcdefgh", "ab-****efgh"}, // 下标 2 处的 '-' 被采用
 	}
 	for _, tc := range cases {
 		if got := Mask(tc.in); got != tc.want {

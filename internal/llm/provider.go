@@ -96,11 +96,53 @@ const FinishLength = "length"
 // NativeSchema 区分两种结构化输出能力（第九篇 §9.1）：
 //   - true：端点原生支持严格 Schema 约束生成（native schema）；
 //   - false：只能自由生成后本地校验（generate-then-validate），必须走修复回路。
+//
+// Embeddings 声明端点支持向量嵌入（POST {base_url}/embeddings）：知识库摄取
+// （kb.chunks.embedding）与相似检索都依赖它。该能力只经 Gateway.Embed 的
+// 点名路由使用——向量维度与训练模型强绑定，**绝不允许**像补全那样按能力
+// 择优回落到别的模型（维度不符会产生静默垃圾数据）。
 type ProviderCapabilities struct {
 	NativeSchema     bool
 	SupportsSeed     bool
 	SupportsTools    bool
+	Embeddings       bool
 	MaxContextTokens int
+}
+
+// EmbeddingRequest 是统一的向量嵌入调用请求。
+//
+// 与 CompletionRequest 同样受治理链约束：TenantID 必须来自可信服务端环境；
+// ModelID 必须点名已登记且声明 Embeddings 能力的模型（不点名、或点名了
+// 无该能力的模型，一律 UNAVAILABLE 失败，不做任何回落）。
+type EmbeddingRequest struct {
+	TenantID ids.ID
+	ModelID  string
+	// Texts 是待嵌入的文本批次（单批条数上限由调用方控制，网关不做分批）。
+	Texts []string
+	// IdempotencyKey 用于账本去重（第九篇 §16.2：重试不重复结算）。
+	IdempotencyKey string
+}
+
+// EmbeddingResponse 是统一的向量嵌入响应。
+type EmbeddingResponse struct {
+	// Vectors 与请求 Texts 一一对应（顺序保持）。
+	Vectors [][]float32
+	// Dimensions 是本次响应的向量维度（所有向量必须一致；不一致视为供应商错误）。
+	Dimensions int
+	// InputTokens 来自供应商 usage（embeddings 只有输入侧计费）。
+	InputTokens int
+	// ModelRevision 是供应商回显的实际模型名。
+	ModelRevision string
+	Raw           json.RawMessage
+}
+
+// EmbeddingProvider 是支持向量嵌入的 Provider 可选扩展接口。
+//
+// 刻意不并入 Provider 主接口：补全与嵌入是两条独立能力线，把 Embed 塞进
+// 主接口会强迫所有适配器（包括测试桩）实现无意义的方法。实现方按需声明，
+// 网关在路由命中后做类型断言——未实现即 UNAVAILABLE 明确失败，绝不静默。
+type EmbeddingProvider interface {
+	Embed(ctx context.Context, req EmbeddingRequest) (EmbeddingResponse, error)
 }
 
 // Provider 是平台能力抽象，而非供应商协议细节（第九篇 §3.2/§4.1）。

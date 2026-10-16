@@ -24,6 +24,7 @@ func CapabilityJSON(c ProviderCapabilities) ([]byte, error) {
 		NativeSchema:     c.NativeSchema,
 		SupportsSeed:     c.SupportsSeed,
 		SupportsTools:    c.SupportsTools,
+		Embeddings:       c.Embeddings,
 		MaxContextTokens: c.MaxContextTokens,
 	})
 }

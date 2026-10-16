@@ -19,8 +19,11 @@ name: odap
 
 services:
   # ── 平台数据库（ODAP）──────────────────────────────────────────────
+  # 镜像用 pgvector/pgvector:pg16（官方 postgres:16 + pgvector 扩展，数据卷兼容）：
+  # 知识库 RAG（kb.chunks.embedding）与动作相似检索（action.actions.embedding）
+  # 依赖 vector 类型与 HNSW 索引。
   postgres:
-    image: postgres:16
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: odap
       POSTGRES_USER: odap
@@ -97,8 +100,13 @@ services:
     environment:
       MOCKERP_DATABASE_URL: ${MOCKERP_DATABASE_URL:?set MOCKERP_DATABASE_URL}
       MOCKERP_HTTP_ADDR: ${MOCKERP_HTTP_ADDR:?set MOCKERP_HTTP_ADDR}
+      # 演示 ERP 启动种子（内存仓储每次启动装载；缺失/非法时拒绝启动）。
+      MOCKERP_SEED_FILE: ${MOCKERP_SEED_FILE:-/app/datasets/finance-demo/mockerp-seed.json}
       APP_ENV: ${APP_ENV:-development}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      # 演示业务数据随库提交，只读挂载（内存仓储重启即重装，声明式种子）。
+      - ./datasets/finance-demo/mockerp-seed.json:/app/datasets/finance-demo/mockerp-seed.json:ro
     depends_on:
       mockerp-db:
         condition: service_healthy
@@ -140,6 +148,9 @@ services:
       # 上传文档落盘根目录（AI 自动生成的本地文件来源）。与只读的语料目录分开：
       # 用户上传属于运行期数据，必须落在可写卷上。
       ODAP_UPLOAD_ROOT: ${ODAP_UPLOAD_ROOT:-/app/var/uploads}
+      # 知识库摄取（嵌入/抽取）点名路由的嵌入模型（Model Registry 已登记的 ModelID）。
+      # 留空时嵌入任务 fail-closed 失败并明确报错，不做任何模型回落。
+      ODAP_KB_EMBEDDING_MODEL: ${ODAP_KB_EMBEDDING_MODEL:-}
     volumes:
       # 制度文档语料（AI 自动生成的读取来源）以只读方式挂载：语料属于仓库资产，
       # 不打进镜像（.dockerignore 有意排除 docs/）。缺此挂载时生成端点会以
@@ -149,6 +160,9 @@ services:
       - ./var/uploads:/app/var/uploads
     ports:
       - "127.0.0.1:8080:8080"
+      # 推理引擎 gRPC（contracts/proto/reasoning.proto，接口语义对齐 OxiRS）。
+      # 设 ODAP_REASON_GRPC_PORT 为空可关闭监听（进程内调用不受影响）。
+      - "127.0.0.1:${ODAP_REASON_GRPC_HOST_PORT:-9091}:9091"
     depends_on:
       postgres:
         condition: service_healthy
@@ -172,6 +186,21 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:?set WORKER_CONCURRENCY}
       WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS:?set WORKER_LEASE_SECONDS}
+      # 知识摄取任务并发（嵌入/抽取，各自独立的循环）。
+      WORKER_INGEST_CONCURRENCY: ${WORKER_INGEST_CONCURRENCY:-2}
+      # 知识库摄取点名路由的嵌入模型（与 api 同变量；worker 是执行方）。
+      ODAP_KB_EMBEDDING_MODEL: ${ODAP_KB_EMBEDDING_MODEL:-}
+      ODAP_SECRET_MASTER_KEY: ${ODAP_SECRET_MASTER_KEY:-}
+      # worker 需要**读**上传的原始文档（嵌入/抽取任务按 source_path 读取文件）。
+      # 缺此挂载时任务以明确的文件读取错误失败，绝不静默产出空结果。
+      ODAP_UPLOAD_ROOT: ${ODAP_UPLOAD_ROOT:-/app/var/uploads}
+      # 制度文档语料根目录（工具 kb.policy.search 的检索根；与 api 同根绝对路径）。
+      ODAP_DOCS_ROOT: ${ODAP_DOCS_ROOT:-/app/docs/资料}
+    volumes:
+      # 制度文档语料（只读）：抽取任务兜底可读语料根（与 api 同根）。
+      - ./docs/资料:/app/docs/资料:ro
+      # 上传文档目录（只读足够：worker 只读不写）。
+      - ./var/uploads:/app/var/uploads:ro
     depends_on:
       postgres:
         condition: service_healthy

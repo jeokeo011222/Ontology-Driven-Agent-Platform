@@ -11,6 +11,7 @@ import (
 
 	"odap/internal/api/handlers"
 	"odap/internal/api/middleware"
+	"odap/internal/reasoning"
 )
 
 // Options 是路由装配选项。
@@ -21,6 +22,9 @@ type Options struct {
 	// RateLimitCapacity/Refill 为每租户令牌桶参数（<=0 时取默认 60/30）。
 	RateLimitCapacity float64
 	RateLimitRefill   float64
+	// Reasoning 是推理引擎服务（模块 B）；nil 时 /api/v1/reasoning/* 端点
+	// 不注册（模块未装配，而非注册后返回 404——装配缺失必须在启动日志明示）。
+	Reasoning *reasoning.Service
 }
 
 // RouteSpec 是一条路由的声明（供路由测试与 openapi 交叉核对）。
@@ -127,6 +131,7 @@ func routes(h *handlers.Handler) []RouteSpec {
 		{http.MethodGet, "/api/v1/policies", h.ListPolicies, false},
 		{http.MethodPost, "/api/v1/policies", h.CreatePolicy, false},
 		{http.MethodGet, "/api/v1/policies/{id}/versions", h.ListPolicyVersions, false},
+		{http.MethodPost, "/api/v1/policies/{id}/versions", h.CreatePolicyVersion, false},
 		{http.MethodPatch, "/api/v1/policies/{key}/versions/{version}", h.UpdatePolicyStatus, false},
 		{http.MethodDelete, "/api/v1/policies/{key}/versions/{version}", h.DeletePolicyVersion, false},
 
@@ -184,6 +189,9 @@ func routes(h *handlers.Handler) []RouteSpec {
 		{http.MethodPatch, "/api/v1/admin/users/{id}", h.AdminUpdateUser, false},
 		{http.MethodDelete, "/api/v1/admin/users/{id}", h.AdminDeleteUser, false},
 
+		// Admin Subjects（主体停用，§14：status=DISABLED + subject_version 递增撤销传播）
+		{http.MethodPost, "/api/v1/admin/subjects/{id}/disable", h.AdminDisableSubject, false},
+
 		// Admin Ontology Categories（管理员）
 		{http.MethodGet, "/api/v1/admin/ontology-categories", h.ListOntologyCategories, false},
 		{http.MethodPost, "/api/v1/admin/ontology-categories", h.CreateOntologyCategory, false},
@@ -210,8 +218,34 @@ func routes(h *handlers.Handler) []RouteSpec {
 		{http.MethodPost, "/api/v1/admin/model-endpoints/{endpoint_id}/models", h.RegisterModelRevision, false},
 		{http.MethodDelete, "/api/v1/admin/model-endpoints/{endpoint_id}/models/{model_revision_id}", h.DeleteModelRevision, false},
 		{http.MethodGet, "/api/v1/admin/connectors", h.AdminConnectors, false},
+		{http.MethodPost, "/api/v1/admin/connectors/{id}/test", h.TestConnector, false},
 		{http.MethodGet, "/api/v1/ops/alerts", h.OpsAlerts, false},
 		{http.MethodGet, "/api/v1/releases", h.Releases, false},
+		{http.MethodPost, "/api/v1/releases/{id}/promote", h.PromoteRelease, false},
+		{http.MethodPost, "/api/v1/releases/{id}/rollback", h.RollbackRelease, false},
+
+		// --- 模块 A：企业知识问答本体（知识库） ---
+		{http.MethodPost, "/api/v1/knowledge/documents", h.CreateKnowledgeDocument, false},
+		{http.MethodGet, "/api/v1/knowledge/documents", h.ListKnowledgeDocuments, false},
+		{http.MethodGet, "/api/v1/knowledge/documents/{id}", h.GetKnowledgeDocument, false},
+		{http.MethodDelete, "/api/v1/knowledge/documents/{id}", h.DeleteKnowledgeDocument, false},
+		{http.MethodPost, "/api/v1/knowledge/jobs/{id}/retry", h.RetryKnowledgeJob, false},
+
+		// --- 模块 C：A2A 多智能体协同（注册表 + JSON-RPC 网关；Agent Card
+		// 挂认证链外的根路径，见 NewRouter）---
+		{http.MethodGet, "/api/v1/a2a/remote-agents", h.ListRemoteAgents, false},
+		{http.MethodPost, "/api/v1/a2a/remote-agents", h.CreateRemoteAgent, false},
+		{http.MethodGet, "/api/v1/a2a/remote-agents/{id}", h.GetRemoteAgent, false},
+		{http.MethodPatch, "/api/v1/a2a/remote-agents/{id}", h.UpdateRemoteAgent, false},
+		{http.MethodDelete, "/api/v1/a2a/remote-agents/{id}", h.DeleteRemoteAgent, false},
+		{http.MethodPost, "/api/v1/a2a/remote-agents/{id}/probe", h.ProbeRemoteAgent, false},
+		{http.MethodPost, "/api/v1/a2a", h.A2AGateway, false},
+
+		// --- 模块 D：本体 Action 管理（查询侧；记录由各业务流旁路写入）---
+		{http.MethodGet, "/api/v1/actions", h.ListActions, false},
+		{http.MethodGet, "/api/v1/actions/{id}", h.GetAction, false},
+		{http.MethodPost, "/api/v1/actions/{id}/similar", h.SimilarActions, false},
+		{http.MethodGet, "/api/v1/actions/{id}/prov.ttl", h.ActionProvTurtle, false},
 	}
 }
 
@@ -252,6 +286,22 @@ func NewRouter(deps handlers.Deps, opts Options) http.Handler {
 		}
 		apiMux.HandleFunc(rt.Method+" "+rt.Pattern, rt.Handler)
 	}
+	// 推理引擎（模块 B）：独立 handler 结构体（持有 *reasoning.Service），
+	// 服务未装配时不注册路由，并在启动日志明示（fail-closed 于装配期暴露）。
+	if opts.Reasoning != nil {
+		rh := handlers.NewReasoningHandler(opts.Reasoning).SetBase(h)
+		for _, rt := range []RouteSpec{
+			{http.MethodGet, "/api/v1/reasoning/rules", rh.ListRules, false},
+			{http.MethodPost, "/api/v1/reasoning/rules", rh.CreateRule, false},
+			{http.MethodGet, "/api/v1/reasoning/rules/{id}", rh.GetRule, false},
+			{http.MethodPatch, "/api/v1/reasoning/rules/{id}", rh.PatchRule, false},
+			{http.MethodDelete, "/api/v1/reasoning/rules/{id}", rh.DeleteRule, false},
+			{http.MethodPost, "/api/v1/reasoning/runs", rh.CreateRun, false},
+			{http.MethodGet, "/api/v1/reasoning/runs", rh.ListRuns, false},
+		} {
+			apiMux.HandleFunc(rt.Method+" "+rt.Pattern, rt.Handler)
+		}
+	}
 	var apiChain http.Handler = apiMux
 	apiChain = middleware.RequireIdentity(apiChain)
 	apiChain = middleware.Auth(opts.Resolver)(apiChain)
@@ -267,6 +317,12 @@ func NewRouter(deps handlers.Deps, opts Options) http.Handler {
 	root := http.NewServeMux()
 	root.HandleFunc("GET /healthz", h.Healthz)
 	root.HandleFunc("GET /readyz", h.Readyz)
+	// A2A Agent Card（协议标准发现路径 /.well-known/agent.json）：卡片内容与
+	// 租户绑定，因此挂**同一条认证链**（外部 Agent 用 Bearer Token 发现），
+	// 而非完全公开——泄露租户资产清单比多一步认证更危险。
+	root.Handle("GET /.well-known/agent.json", publicChain(
+		middleware.Auth(opts.Resolver)(
+			middleware.RequireIdentity(http.HandlerFunc(h.AgentCard)))))
 	for _, rt := range rs {
 		if !rt.Public {
 			continue

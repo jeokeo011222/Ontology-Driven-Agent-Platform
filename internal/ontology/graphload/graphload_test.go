@@ -381,13 +381,13 @@ func TestNamespaceAndGraphIRI(t *testing.T) {
 
 func TestXsdIRI(t *testing.T) {
 	ok := map[string]string{
-		"string":                      xsdNamespace + "string",
-		"number":                      xsdNamespace + "decimal",
-		"integer":                     xsdNamespace + "integer",
-		"INTEGER":                     xsdNamespace + "integer",
-		"boolean":                     xsdNamespace + "boolean",
-		"date":                        xsdNamespace + "date",
-		"datetime":                    xsdNamespace + "dateTime",
+		"string":   xsdNamespace + "string",
+		"number":   xsdNamespace + "decimal",
+		"integer":  xsdNamespace + "integer",
+		"INTEGER":  xsdNamespace + "integer",
+		"boolean":  xsdNamespace + "boolean",
+		"date":     xsdNamespace + "date",
+		"datetime": xsdNamespace + "dateTime",
 		// 契约把 enum 列为合法的属性类型（见 ontologyManifestSchema 与错误提示），
 		// 枚举取值在 RDF 里仍是字符串字面量，因此映射到 xsd:string。
 		"enum":                        xsdNamespace + "string",
@@ -708,5 +708,229 @@ func TestLoadIsIdempotent(t *testing.T) {
 	}
 	if second != 0 {
 		t.Fatalf("重复装载不应新增三元组，实际新增 %d 条", second)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 业务约束通道（constraints）：双通道派生 + 合并 + 可满足性校验
+// ---------------------------------------------------------------------------
+
+// constraintsOnlyManifest 与 violatingManifest 同构，但**完全没有 shapes**：
+// 全部约束走 constraints 通道。这验证双通道设计的关键承诺——业务约束不因
+// "没有形状可挂"而静默丢失（自动补建形状）。
+const constraintsOnlyManifest = `{
+  "summary": "合同管理本体（约束通道）",
+  "classes": [
+    {"name": "Contract", "label": "合同", "description": "一份合同", "attributes": [
+      {"name": "contract_no", "type": "string", "description": "合同编号", "required": true},
+      {"name": "amount", "type": "number", "description": "合同金额", "required": true}
+    ]},
+    {"name": "Party", "label": "合同相对方", "description": "签约主体", "attributes": [
+      {"name": "party_name", "type": "string", "description": "主体名称", "required": true}
+    ]}
+  ],
+  "relations": [
+    {"name": "signed_by", "from_class": "Contract", "to_class": "Party",
+     "cardinality": "many-to-one", "description": "合同由某主体签署"}
+  ],
+  "enumerations": [],
+  "shapes": [],
+  "constraints": [
+    {"class": "Contract", "path": "contract_no", "min_count": 1, "pattern": "^HT-[0-9]{4}$"},
+    {"class": "Contract", "path": "amount", "min_count": 1, "min_inclusive": 0, "max_inclusive": 1000000},
+    {"class": "Contract", "path": "signed_by", "min_count": 1}
+  ],
+  "instances": [
+    {"class": "Party", "id": "P-01", "properties": {"party_name": "甲方有限公司"}},
+    {"class": "Contract", "id": "C-0001",
+     "properties": {"contract_no": "HT-0001", "amount": 100000, "signed_by": "P-01"}}
+  ]
+}`
+
+func TestConstraintsOnly_ChannelDerivesShapes(t *testing.T) {
+	m := mustParse(t, constraintsOnlyManifest)
+	if len(m.Constraints) != 3 {
+		t.Fatalf("约束条数应为 3，实际 %d", len(m.Constraints))
+	}
+	ns := mustNamespace(t)
+	shapes, err := m.BuildShapes(ns)
+	if err != nil {
+		t.Fatalf("BuildShapes 失败: %v", err)
+	}
+	// 显式形状为 0，但约束通道必须自动补出一个形状，且 3 条约束一条不丢。
+	if len(shapes) != 1 {
+		t.Fatalf("应自动派生 1 个形状，实际 %d", len(shapes))
+	}
+	if shapes[0].ID != ns.ShapeIRI("auto-Contract") {
+		t.Fatalf("派生形状 ID 应为 auto-Contract 的 IRI，实际 %s", shapes[0].ID)
+	}
+	if len(shapes[0].Properties) != 3 {
+		t.Fatalf("派生形状应含 3 条属性形状，实际 %d", len(shapes[0].Properties))
+	}
+	// 探针的目标类必须把约束通道的类算进去，否则"约束只挂在约束通道类上"的
+	// 本体会被误判为 0 实例（反假绿探针漏报）。
+	targets := m.TargetClassIRIs(ns)
+	found := false
+	for _, iri := range targets {
+		if iri == ns.ClassIRI("Contract") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("TargetClassIRIs 应包含约束通道的类 Contract，实际 %v", targets)
+	}
+}
+
+func TestConstraintsOnly_ViolatingInstanceBlocked(t *testing.T) {
+	// 把合规实例换成违规实例（同 TestEndToEnd 的违规形态），约束通道必须同样拦得住。
+	violating := strings.Replace(constraintsOnlyManifest,
+		`{"class": "Contract", "id": "C-0001",
+     "properties": {"contract_no": "HT-0001", "amount": 100000, "signed_by": "P-01"}}`,
+		`{"class": "Contract", "id": "C-0002", "properties": {"contract_no": "BAD", "amount": 9999999}}`, 1)
+	if violating == constraintsOnlyManifest {
+		t.Fatal("测试语料替换失败")
+	}
+	m := mustParse(t, violating)
+	store, tenant, ns, graphIRI := load(t, m, testOntologyKey, "ver-bad-c")
+	shapes, err := m.BuildShapes(ns)
+	if err != nil {
+		t.Fatalf("BuildShapes 失败: %v", err)
+	}
+	report, err := shacl.Validate(store, tenant, graphIRI, shapes)
+	if err != nil {
+		t.Fatalf("shacl.Validate 失败: %v", err)
+	}
+	if report.Conforms {
+		t.Fatal("约束通道的违规合同必须被拦下（约束丢失 = 静默放行）")
+	}
+	got := map[string]bool{}
+	for _, r := range report.Results {
+		if r.FocusNode != ns.InstanceIRI("C-0002") {
+			t.Fatalf("finding 焦点节点应为 C-0002，实际 %s", r.FocusNode)
+		}
+		got[r.Component] = true
+	}
+	for _, c := range []string{"Pattern", "MaxInclusive", "MinCount"} {
+		if !got[c] {
+			t.Fatalf("缺少 %s 违规项，实际组件集合 %v", c, got)
+		}
+	}
+}
+
+func TestConstraints_MergeOverridesExplicitShape(t *testing.T) {
+	// 显式形状写了宽松 pattern，约束通道写了文档里的严格 pattern：
+	// 合并后业务约束优先（它来自文档逐字抽取，比模型骨架更贴近原意）。
+	raw := strings.Replace(conformingManifest,
+		`{"path": "contract_no", "min_count": 1, "max_count": 1, "datatype": "string", "pattern": "^HT-[0-9]{4}$"},`,
+		`{"path": "contract_no", "min_count": 1, "max_count": 1, "datatype": "string", "pattern": "^.*$"},`, 1)
+	if raw == conformingManifest {
+		t.Fatal("测试语料替换失败")
+	}
+	raw = strings.Replace(raw, `"shapes": [`,
+		`"constraints": [{"class": "Contract", "path": "contract_no", "pattern": "^HT-[0-9]{4}$"}], "shapes": [`, 1)
+	m := mustParse(t, raw)
+	ns := mustNamespace(t)
+	shapes, err := m.BuildShapes(ns)
+	if err != nil {
+		t.Fatalf("BuildShapes 失败: %v", err)
+	}
+	if len(shapes) != 1 {
+		t.Fatalf("合并后形状数应为 1（不新增），实际 %d", len(shapes))
+	}
+	for _, ps := range shapes[0].Properties {
+		if ps.Path == ns.AttributeIRI("Contract", "contract_no") {
+			if ps.Pattern != "^HT-[0-9]{4}$" {
+				t.Fatalf("业务约束应覆盖显式形状的 pattern，实际 %q", ps.Pattern)
+			}
+			return
+		}
+	}
+	t.Fatal("合并后形状缺少 contract_no 属性形状")
+}
+
+func TestConstraints_ClosureFailures(t *testing.T) {
+	base := strings.Replace(conformingManifest, `"shapes": [`,
+		`"constraints": [{"class": "Contract", "path": "contract_no", "pattern": "^HT-[0-9]{4}$"}], "shapes": [`, 1)
+	if base == conformingManifest {
+		t.Fatal("测试语料替换失败")
+	}
+	cases := []struct {
+		name    string
+		mutate  func(string) string
+		pointer string
+		keyword string
+	}{
+		{
+			name: "class 未定义",
+			mutate: func(s string) string {
+				return strings.Replace(s, `"class": "Contract", "path": "contract_no"`, `"class": "NoSuch", "path": "contract_no"`, 1)
+			},
+			pointer: "/constraints/0/class", keyword: "未在 classes 中定义",
+		},
+		{
+			name:    "path 未定义",
+			mutate:  func(s string) string { return strings.Replace(s, `"path": "contract_no"`, `"path": "no_such_attr"`, 1) },
+			pointer: "/constraints/0/path", keyword: "既不是已声明的关系",
+		},
+		{
+			name: "min_count 大于 max_count",
+			mutate: func(s string) string {
+				return strings.Replace(s, `"path": "contract_no", "pattern"`, `"path": "contract_no", "min_count": 3, "max_count": 1, "pattern"`, 1)
+			},
+			pointer: "/constraints/0/min_count", keyword: "不可满足",
+		},
+		{
+			name:    "正则不合法",
+			mutate:  func(s string) string { return strings.Replace(s, `^HT-[0-9]{4}$`, `^HT-[0-9($`, 1) },
+			pointer: "/constraints/0/pattern", keyword: "不是合法正则",
+		},
+		{
+			name: "正则用于数值属性",
+			mutate: func(s string) string {
+				return strings.Replace(s, `"path": "contract_no", "pattern": "^HT-[0-9]{4}$"`, `"path": "amount", "pattern": "^HT-[0-9]{4}$"`, 1)
+			},
+			pointer: "/constraints/0/pattern", keyword: "只能用于文本属性",
+		},
+		{
+			name: "数值区间用于文本属性",
+			mutate: func(s string) string {
+				return strings.Replace(s, `"path": "contract_no", "pattern": "^HT-[0-9]{4}$"`, `"path": "contract_no", "min_inclusive": 0`, 1)
+			},
+			pointer: "/constraints/0/min_inclusive", keyword: "数值区间只能用于",
+		},
+		{
+			name: "in 用于数值属性",
+			mutate: func(s string) string {
+				return strings.Replace(s, `"path": "contract_no", "pattern": "^HT-[0-9]{4}$"`, `"path": "amount", "in": ["a", "b"]`, 1)
+			},
+			pointer: "/constraints/0/in", keyword: "不能用于数值属性",
+		},
+		{
+			name: "关系不接受取值约束",
+			mutate: func(s string) string {
+				return strings.Replace(s, `"path": "contract_no", "pattern": "^HT-[0-9]{4}$"`, `"path": "signed_by", "pattern": "^x$"`, 1)
+			},
+			pointer: "/constraints/0/path", keyword: "只接受 min_count/max_count",
+		},
+		{
+			name:    "占用保留前缀 auto- 的显式形状",
+			mutate:  func(s string) string { return strings.Replace(s, `"id": "ContractShape"`, `"id": "auto-Contract"`, 1) },
+			pointer: "/shapes/0/id", keyword: "保留前缀",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := tc.mutate(base)
+			_, err := ParseManifest([]byte(raw))
+			if err == nil {
+				t.Fatal("期望报错，实际通过")
+			}
+			if p := pointerOf(t, err); p != tc.pointer {
+				t.Fatalf("JSON Pointer 应为 %s，实际 %s（错误：%v）", tc.pointer, p, err)
+			}
+			if !strings.Contains(err.Error(), tc.keyword) {
+				t.Fatalf("错误信息应含 %q，实际：%v", tc.keyword, err)
+			}
+		})
 	}
 }

@@ -33,7 +33,7 @@ export function useCreatePolicyVersion() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (policyId: string) =>
-      apiPost<{ id: string; version: string; state: string }>(
+      apiPost<{ id: string; version: string; based_on: string; status: string }>(
         `/policies/${encodeURIComponent(policyId)}/versions`,
         { based_on: 'current' },
         { idempotencyKey: newIdempotencyKey(`policy-version-${policyId}`) },

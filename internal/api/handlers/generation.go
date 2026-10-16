@@ -186,9 +186,10 @@ func ontologyPreflight(ctx context.Context, tenantID ids.ID, ontologyKey string,
 	if err != nil {
 		return nil, err
 	}
-	// 与 /validate 的判定一致：没有形状就没有可执行的约束，"通过"是无意义的。
-	if len(parsed.Shapes) == 0 {
-		return []string{"清单没有定义任何 SHACL 形状（shapes 为空），校验会以「未定义形状」被拒；请为关键类补上 shapes"}, nil
+	// 与 /validate 的判定一致：两条约束通道（shapes 骨架 + constraints 业务约束）
+	// 全空时没有可执行的约束，"通过"是无意义的。
+	if len(parsed.Shapes) == 0 && len(parsed.Constraints) == 0 {
+		return []string{"清单没有定义任何可执行约束（shapes 与 constraints 均为空），校验会以「未定义形状」被拒；请为关键类补上 shapes，或把文档中的硬约束写进 constraints"}, nil
 	}
 	shapes, err := parsed.BuildShapes(ns)
 	if err != nil {
@@ -666,6 +667,29 @@ const ontologyManifestSchema = `{
         }
       }
     },
+    "constraints": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["class", "path"],
+        "properties": {
+          "class": {"type": "string"},
+          "path": {"type": "string"},
+          "severity": {"type": "string", "enum": ["Violation", "Warning", "Info"]},
+          "min_count": {"type": "integer"},
+          "max_count": {"type": "integer"},
+          "in": {"type": "array", "items": {"type": "string"}},
+          "min_inclusive": {"type": "number"},
+          "max_inclusive": {"type": "number"},
+          "min_exclusive": {"type": "number"},
+          "max_exclusive": {"type": "number"},
+          "pattern": {"type": "string"},
+          "min_length": {"type": "integer"},
+          "max_length": {"type": "integer"}
+        }
+      }
+    },
     "instances": {
       "type": "array",
       "maxItems": 10,
@@ -683,47 +707,86 @@ const ontologyManifestSchema = `{
 }`
 
 const ontologySystemPrompt = `你是企业本体建模与 SHACL 约束设计专家。用户会给出制度文档正文，请从中抽取业务本体，并为它写出一套**可执行的约束**与**样例实例**。
-重要：这是一份**有界**的输出。下面每一项的数量上限同时写在 JSON Schema 的 maxItems 里，
-超出会使整份清单被判为不合法、整体作废。宁可只覆盖文档中最重要的对象与约束，
-也不要为了"齐全"而超限；也不要把所有字段都塞进去——少而准优于多而杂。
-要求：
-1. 只依据文档内容建模，不得引入文档中不存在的概念，不得编造数据；
-2. classes 覆盖文档中出现的关键业务对象（如单据、事项、角色、标准），label 用中文，name 用英文；
-   最多 8 个，优先选取文档中反复出现、构成单据或事项主干的对象，description 用一句短语（不超过 30 字）；
-3. attributes 是该类的关键字段，type 取 string/number/integer/boolean/date/datetime/enum 之一，
+
+════════════════════════════════════════
+🔴 铁律速查（最高频致命错误，先扫一遍再动手）
+════════════════════════════════════════
+① 只提取文档中实际出现的内容。禁止编造、假设、或从示例中复制任何类/属性/约束。文档里没有的概念绝不能出现在输出中。
+② 每一项数量上限同时写在 JSON Schema 的 maxItems 里，超限整份作废。宁可只覆盖最重要的对象与约束，也不要为"齐全"超限；少而准优于多而杂。
+③ relations 是**顶层数组**（与 classes 平级），不是写在某个类里的字段。
+④ 关系取值必须是 instances 里真实存在的 id，且目标实例的 class 必须等于该关系的 to_class；关系的主体实例必须属于 from_class（方向写反 = 整份被拒）。
+⑤ 属性取值必须与 attributes 声明的 type 相符（数值写数字，不要写带单位的字符串）。
+⑥ 样例取值必须满足你自己在 shapes/constraints 里写的约束——你没有机会事后改数据。若某条约束连你自己的样例都过不了，就把它改成文档确实支持的宽松形式。
+⑦ 只使用 Schema 里声明过的字段，多写一个字段整份清单作废。attributes/relations/enumerations/constraints/instances 的条目一律不写 label。
+⑧ 输出必须是符合给定 JSON Schema 的**单个 JSON 对象**，第一个字符是 {，最后一个字符是 }，不要任何解释性文字。
+
+════════════════════════════════════════
+🔴 阶段零：文档盘点——提取之前必须先完成
+════════════════════════════════════════
+在开始提取之前，先通读全文并在内部完成盘点（防止"处理了前几段就输出、漏掉后半份文档"）：
+1. 列出文档的章节/制度条目，逐节统计其中出现的业务对象与硬性规则数量（逐条数，不要估算）；
+2. 确认每个制度文件/章节里有多少条"数值区间 / 枚举 / 长度 / 必填 / 正则"类硬约束；
+3. 提取过程中随时对照盘点清单：每完成一节标记已完成，输出前核对"盘点总数 == 实际提取数"。
+
+════════════════════════════════════════
+🔴 阶段零.5：语义融合草稿——输出 JSON 前必须先完成
+════════════════════════════════════════
+无论输入是单一制度还是多份文档，都必须先在内部产出一份融合草稿，再据此落笔；禁止跳过融合、凭直觉边读边抽。草稿必须包含：
+1. 实体清单：每个 class 对应文档的哪些章节；同义实体是否归并（"报销单"与"费用报销单"是同一个类还是两个）；
+2. 属性消歧：跨类同名字段（如多处出现的"名称""编号"）各自属于哪个 class；
+3. 关系清单：每对类之间文档指明了什么关联，谁是 from 谁是 to；
+4. 对照检查：草稿里的每个 class/属性/关系/约束，是否都能在文档中找到依据（无依据即删）。
+
+════════════════════════════════════════
+字段要求
+════════════════════════════════════════
+1. classes：覆盖文档中出现的关键业务对象（如单据、事项、角色、标准），label 用中文，name 用英文；
+   最多 8 个，优先选取文档中反复出现、构成单据或事项主干的对象，description 用一句短语（不超过 30 字）。
+2. attributes：该类的关键字段，type 取 string/number/integer/boolean/date/datetime/enum 之一，
    每个类最多 8 个（只保留关键字段）、description 用一句短语（不超过 30 字）；
-   required 表示文档是否要求该字段必填；
-4. relations 是**顶层数组**（与 classes 平级），**不是**写在某个类里的字段：
-   不要给 classes 的条目加 relations 字段，把所有关系平铺到这个顶层数组里；
-   每个元素描述两个类之间的关系，from_class/to_class 必须出现在 classes.name 中；最多 12 条；
-5. enumerations 覆盖文档中明确列举的取值集合（如费用类别、单据状态），最多 6 个，每个最多 12 个取值；
-6. shapes 是你为该本体写下的 SHACL 约束，每个形状针对一个类（target_class），
-   每个形状必须给出唯一 id（英文与连字符，如 expense-claim-shape），
+   required 表示文档是否要求该字段必填。**不要把所有字段都写成必填**：只对文档明确要求、
+   缺失即违规的字段设 required=true，否则会给合规数据产生大量无意义告警，让人不再信任门禁。
+3. relations：顶层数组；from_class/to_class 必须出现在 classes.name 中；最多 12 条。
+4. enumerations：覆盖文档中明确列举的取值集合（如费用类别、单据状态），最多 6 个，每个最多 12 个取值。
+5. shapes：你为该本体写下的 SHACL **形状骨架**，每个形状针对一个类（target_class），
+   每个形状必须给出唯一 id（英文与连字符，如 expense-claim-shape；不得以 auto- 开头，该前缀保留给系统），
    其 properties[].path 只能是「该类的某个属性名」或「relations 里的某个关系名」，不许写 IRI。
    每个类最多一个形状、共不超过 8 个；每个形状最多 8 条 properties（挑最关键、最值得约束的字段）。
    可用约束：min_count / max_count（出现次数）、datatype（string/decimal/integer/boolean/date/dateTime）、
    class（取值必须是某个类的实例，用于关系）、node_kind（IRI/Literal）、in（取值必须属于给定集合）、
    min_inclusive / max_inclusive / min_exclusive / max_exclusive（数值区间）、pattern（正则，作用于字段文本）、
    min_length / max_length（文本长度）、severity（Violation 阻断发布，Warning 只提示）。
-   注意：不要把所有字段都写成必填。只对文档明确要求、缺失即违规的字段设 min_count = 1，
-   否则会给合规数据产生大量无意义告警，反过来让人不再信任门禁；
-7. instances 是用于验证上面这套形状的**样例实例**，2～10 条（不超过 10 条）：
+6. constraints：**业务硬约束通道**——把文档中逐字可验证的硬约束单独列出（每条 {class, path, ...}）。
+   path 是该类的属性名或关系名；可用字段：min_count / max_count / in / min_inclusive / max_inclusive /
+   min_exclusive / max_exclusive / pattern / min_length / max_length / severity，最多 24 条。
+   硬性规则：
+   - 只写文档中**明确、可验证**的约束（文档写了"金额不超过 100 万元"才写 max_inclusive=1000000）；
+     模糊表述（"金额应合理"）不要写——写出来只会产生无法追溯的违规；
+   - 类型必须相容：数值区间（min/max_inclusive 等）只能用于 number/integer 属性；
+     pattern / min_length / max_length / in 只能用于文本属性；关系只接受 min_count/max_count；
+   - 数值属性不要用 pattern 或 in（用数值区间）；文本属性不要用数值区间；
+   - min_count/max_count 与 shapes 里的重复没关系：约束通道的值会覆盖形状骨架的同名字段，
+     当文档对某字段有比骨架更强的要求时，把更强的值写在 constraints 里。
+7. instances：用于验证上面这套约束的**样例实例**，2～10 条（不超过 10 条）：
    class 必须是 classes 中的类；id 用英文与连字符；properties 的键只能是该类的属性名或关系名；
    关系取值写目标实例的 id（该 id 必须也出现在 instances 里，且其 class 必须等于该关系的 to_class）；
-   属性取值必须与 attributes 中声明的 type 相符（数值型写数字，不要写带单位的字符串）。
-   注意：这是**闭包校验**——任何指向不存在实例的关系引用都会让整份清单被拒绝。
-   若某条关系在 instances 里找不到匹配的目标实例，就补上该目标实例；实在没有必要就干脆不写这条关系。
-   同时这是**自洽校验**——你不会有机会事后改数据：样例取值必须满足你自己在上面写的 shapes 约束
-   （pattern、长度、datatype、数值范围、minCount 等）。若某条约束连你自己给的样例都过不了，
-   就把该约束改成文档确实支持的宽松形式，不要保留一个把合法数据判成违规的过严约束。
-8. 只使用 Schema 里声明过的字段，不得多写任何字段：label 只出现在 classes 的每一个条目上；
-   attributes、relations、enumerations、shapes、instances 及其子项都**不要**写 label（或任何其它未声明字段），
-   多写一个字段整份清单就会被判为不合法；
-9. 严格输出符合给定 JSON Schema 的单个 JSON 对象，不要输出任何解释性文字。
+   属性取值必须与 attributes 中声明的 type 相符。这是**闭包校验**（引用不存在 = 整份被拒），
+   也是**自洽校验**（样例必须满足你自己的 shapes 与 constraints）。
+
+════════════════════════════════════════
+🔴 输出前强制自检（逐条确认后再输出）
+════════════════════════════════════════
+1. 盘点核对：阶段零盘点的每一条对象与硬约束都已提取，无中间截断、无整段遗漏；
+2. 关系闭包：每条关系的主体实例属于 from_class、目标实例存在且属于 to_class；
+3. 自洽：每个样例取值都满足你自己写的 shapes 与 constraints（pattern/长度/区间/枚举/minCount）；
+4. 约束可满足：没有 min>max、空数值区间、类型不相容的约束（这类约束会在解析期被直接拒绝）；
+5. 字段纪律：没有多写任何未声明字段；条目数都在上限内；
+6. 输出形态：单个 JSON 对象，无解释文字、无 markdown 围栏。
 
 输出的骨架固定如下（键名必须与此完全一致：不能多一个、不能少一个，只把取值换成文档中的真实内容。
-注意 attributes 的键只有 name/type/description/required，relations 是顶层数组、其元素没有 label 字段）：
-{"summary":"…","classes":[{"name":"…","label":"…","description":"…","attributes":[{"name":"…","type":"string","description":"…","required":true}]}],"relations":[{"name":"…","from_class":"…","to_class":"…","cardinality":"1..*","description":"…"}],"enumerations":[{"name":"…","values":["…"]}],"shapes":[{"id":"…","target_class":"…","severity":"Violation","properties":[{"path":"…","min_count":1,"datatype":"string"}]}],"instances":[{"class":"…","id":"…","properties":{"…":"…"}}]}`
+注意 attributes 的键只有 name/type/description/required，relations 是顶层数组、其元素没有 label 字段，
+constraints 可省略——但文档中存在明确硬约束时强烈建议输出）：
+{"summary":"…","classes":[{"name":"…","label":"…","description":"…","attributes":[{"name":"…","type":"string","description":"…","required":true}]}],"relations":[{"name":"…","from_class":"…","to_class":"…","cardinality":"1..*","description":"…"}],"enumerations":[{"name":"…","values":["…"]}],"shapes":[{"id":"…","target_class":"…","severity":"Violation","properties":[{"path":"…","min_count":1,"datatype":"string"}]}],"constraints":[{"class":"…","path":"…","max_inclusive":1000000}],"instances":[{"class":"…","id":"…","properties":{"…":"…"}}]}`
 
 // GenerateOntologyRequest 是 POST /api/v1/ontologies/generate 的请求体。
 //
@@ -930,6 +993,7 @@ func (h *Handler) GenerateOntology(w http.ResponseWriter, r *http.Request) {
 			"source_chars":    corpus.Chars,
 			"truncated":       corpus.Truncated,
 			"shacl_shapes":    len(parsed.Shapes),
+			"constraints":     len(parsed.Constraints),
 			"instances":       parsed.InstanceCount(),
 			"model":           modelRevisionOf(comp),
 			"idempotency_key": idempotencyKey(r),
@@ -944,10 +1008,11 @@ func (h *Handler) GenerateOntology(w http.ResponseWriter, r *http.Request) {
 		"truncated":    corpus.Truncated,
 		"warnings":     corpus.Warnings,
 		"model":        completionMeta(comp),
-		// 明确回报"生成了几条约束、几条样例实例"：这是调用方判断
-		// "这份本体是否真的自带可执行规则"的唯一依据——只有 classes 没有 shapes
-		// 的本体，后续校验会以 422 明示"未定义形状"，而不是悄悄报通过。
+		// 明确回报"生成了几条形状、几条业务约束、几条样例实例"：这是调用方判断
+		// "这份本体是否真的自带可执行规则"的唯一依据——两条约束通道全空的本体，
+		// 后续校验会以 422 明示"未定义形状"，而不是悄悄报通过。
 		"shacl_shapes": len(parsed.Shapes),
+		"constraints":  len(parsed.Constraints),
 		"instances":    parsed.InstanceCount(),
 	}
 	h.writeJSON(w, http.StatusCreated, out)

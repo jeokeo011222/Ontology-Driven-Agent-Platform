@@ -20,6 +20,10 @@ import { ToolsPage } from '@/features/tools/pages/ToolsPage';
 import { SkillsPage } from '@/features/skills/pages/SkillsPage';
 import { WorkflowsPage } from '@/features/workflows/pages/WorkflowsPage';
 import { ModelsPage } from '@/features/llm-providers/pages/ModelsPage';
+import { KnowledgePage } from '@/features/knowledge/pages/KnowledgePage';
+import { ReasoningPage } from '@/features/reasoning/pages/ReasoningPage';
+import { A2APage } from '@/features/a2a/pages/A2APage';
+import { ActionsPage } from '@/features/actions/pages/ActionsPage';
 import { ConnectorsPage } from '@/features/erp-connectors/pages/ConnectorsPage';
 import { PoliciesPage } from '@/features/policies/pages/PoliciesPage';
 import { MonitoringPage } from '@/features/monitoring/pages/MonitoringPage';
@@ -81,6 +85,13 @@ export const router = createBrowserRouter([
       { path: 'identity', element: guarded(<IdentityPage />, 'admin.identity.read') },
       { path: 'ontologies', element: guarded(<OntologyListPage />, 'admin.ontology.read') },
       { path: 'ontologies/:id', element: guarded(<OntologyDetailPage />, 'admin.ontology.read') },
+      // 知识问答本体（模块 A）/ 推理引擎（模块 B）/ A2A 协同（模块 C）/
+      // 动作管理（模块 D）：服务端端点仅要求会话（未设独立资源权限键），
+      // 前端守卫沿用 admin.console，与端点授权口径一致（不得虚设未落目录的键）。
+      { path: 'knowledge', element: guarded(<KnowledgePage />, 'admin.console') },
+      { path: 'reasoning', element: guarded(<ReasoningPage />, 'admin.console') },
+      { path: 'a2a', element: guarded(<A2APage />, 'admin.console') },
+      { path: 'actions', element: guarded(<ActionsPage />, 'admin.console') },
       { path: 'data-sources', element: guarded(<DataMappingPage />, 'admin.data-source.read') },
       { path: 'agents', element: guarded(<AgentsPage />, 'admin.agent.read') },
       // 技能管理沿用 admin.agent.* 权限键（与 Agent 管理同组；服务端不改 RBAC 种子）

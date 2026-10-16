@@ -3,6 +3,9 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -286,6 +289,134 @@ func (s *Store) ListPolicyVersions(ctx context.Context, policyKey string) (*List
 		return nil, err
 	}
 	return res, nil
+}
+
+// CreatePolicyVersionFromCurrent 基于 policy_key 的**最新已发布版本**克隆一个
+// 新 DRAFT 版本（前端「创建新版本」按钮：已发布策略不可原地修改，§8.4）。
+//
+// 语义：based_on='current' = 最新 PUBLISHED（按 published_at 降序）；该 key
+// 没有任何已发布版本时拒绝（409）——从草稿克隆草稿没有意义，且会造成版本谱系不明。
+// 版本号自动派生：点分数字（1.2.3）递增最后一段；否则追加 -rev2/-rev3；
+// 与既有版本号冲突时顺延，绝不静默覆盖（UNIQUE(tenant_id, policy_key, version) 兜底）。
+func (s *Store) CreatePolicyVersionFromCurrent(ctx context.Context, policyKey string) (map[string]any, error) {
+	if policyKey == "" {
+		return nil, errors.E(errors.CodeInvalidArgument, "policy_key 必填")
+	}
+	if len(policyKey) > 128 {
+		return nil, errors.E(errors.CodeInvalidArgument, "policy_key 过长")
+	}
+	createdBy, err := subjectFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{}
+	err = s.TenantTx(ctx, func(tx pgx.Tx) error {
+		// 基准：最新 PUBLISHED。
+		base, err := queryMaps(ctx, tx, `
+            SELECT version, policy_language, policy_document::text AS document
+              FROM governance.policy_versions
+             WHERE policy_key = $1 AND status = 'PUBLISHED'
+             ORDER BY published_at DESC NULLS LAST, created_at DESC
+             LIMIT 1`, policyKey)
+		if err != nil {
+			return err
+		}
+		if len(base) == 0 {
+			return errors.E(errors.CodeConflict,
+				"策略 "+policyKey+" 没有已发布版本，无法作为新版本的克隆基准（仅 PUBLISHED 可基于）")
+		}
+		document := asString(base[0]["document"])
+		language := asString(base[0]["policy_language"])
+		baseVersion := asString(base[0]["version"])
+		if !json.Valid([]byte(document)) {
+			return errors.E(errors.CodeInternal, "基准版本文档不是合法 JSON（数据损坏）")
+		}
+		// DSL 结构校验与 CreatePolicy 同源：克隆的数据损坏要在写入前被拦下。
+		if language == "JSON_DSL_V1" {
+			if _, err := authorization.ParsePolicy([]byte(document)); err != nil {
+				return errors.E(errors.CodeValidationFailed, "基准版本文档未通过 JSON DSL 校验（数据损坏）")
+			}
+		}
+		// 既有版本号全集 → 派生下一个可用版本号。
+		rows, err := queryMaps(ctx, tx,
+			`SELECT version FROM governance.policy_versions WHERE policy_key = $1`, policyKey)
+		if err != nil {
+			return err
+		}
+		existing := make(map[string]bool, len(rows))
+		for _, row := range rows {
+			existing[asString(row["version"])] = true
+		}
+		next := nextDraftVersion(baseVersion, existing)
+		if next == "" {
+			return errors.E(errors.CodeConflict, "无法派生下一个版本号（版本号空间耗尽）")
+		}
+		versionID := ids.New().String()
+		if _, err := tx.Exec(ctx, `
+            INSERT INTO governance.policy_versions
+                (id, tenant_id, policy_key, version, status, policy_language,
+                 policy_document, content_digest, created_by)
+            VALUES ($1, app.current_tenant_id(), $2, $3, 'DRAFT', $4, $5::jsonb, $6, $7)`,
+			versionID, policyKey, next, language, document, digestBytes([]byte(document)),
+			createdBy.String()); err != nil {
+			return errors.Wrap(err, errors.CodeConflict, "创建策略版本失败（version 可能已被并发占用）")
+		}
+		out["id"] = versionID
+		out["policy_key"] = policyKey
+		out["version"] = next
+		out["based_on"] = baseVersion
+		out["status"] = "DRAFT"
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// nextDraftVersion 从基准版本号派生下一个未占用的草稿版本号。
+// 点分数字递增最后一段（1.2.3 → 1.2.4）；非点分数字追加 -revN；冲突顺延。
+func nextDraftVersion(base string, existing map[string]bool) string {
+	candidate := base
+	if dottedNumeric(base) {
+		segs := strings.Split(base, ".")
+		for i := 0; i < 1000; i++ {
+			n, err := strconv.Atoi(segs[len(segs)-1])
+			if err != nil {
+				break // 理论不可达（dottedNumeric 已校验）；防御：退到 -revN 分支
+			}
+			segs[len(segs)-1] = strconv.Itoa(n + 1)
+			candidate = strings.Join(segs, ".")
+			if !existing[candidate] {
+				return candidate
+			}
+		}
+	}
+	for i := 2; i < 1000; i++ {
+		candidate = fmt.Sprintf("%s-rev%d", base, i)
+		if !existing[candidate] {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// dottedNumeric 判断是否为"每段都是数字"的版本号（至少一段）。
+func dottedNumeric(v string) bool {
+	if v == "" {
+		return false
+	}
+	for _, seg := range strings.Split(v, ".") {
+		if seg == "" {
+			return false
+		}
+		for _, r := range seg {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // CreatePolicyInput 是创建策略版本的输入。

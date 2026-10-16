@@ -441,13 +441,7 @@ func dedupe(xs []string) []string {
 // rollback 前端已接入、服务端未实现），一次改动不宜把它们一并变成红灯。折中方案是
 // 把它们登记下来——缺口因此是**被记录的事实**，而不是被掩盖的空洞；并且一旦它们
 // 被补进 openapi，会以"陈旧豁免"再次失败，强制清理。
-var unregisteredWebEndpoints = map[string]string{
-	"POST /api/v1/admin/connectors/{p}/test":  "前端 useTestConnector 已接入「验证连接」；服务端与契约均未实现该端点",
-	"POST /api/v1/admin/subjects/{p}/disable": "前端 useDisableSubject 已接入；契约中不存在任何 /admin/subjects 路径",
-	"POST /api/v1/policies/{p}/versions":      "前端 useCreatePolicyVersion 已接入；契约该路径目前只声明了 GET（创建版本尚无契约与实现）",
-	"POST /api/v1/releases/{p}/promote":       "前端 usePromoteRelease 已接入；服务端与契约均未实现",
-	"POST /api/v1/releases/{p}/rollback":      "前端 useRollbackRelease 已接入；服务端与契约均未实现",
-}
+var unregisteredWebEndpoints = map[string]string{}
 
 // operationStatuses 是 (VERB path) → 已声明状态码集合。
 type operationStatuses map[string]map[string]bool

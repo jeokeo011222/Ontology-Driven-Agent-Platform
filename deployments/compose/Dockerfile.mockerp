@@ -1,5 +1,5 @@
 # 独立 Mock ERP 镜像（第十六篇 §8.2 mockerp 服务；入口为 cmd/mock-erp）。
-FROM golang:1.23-bookworm AS build
+FROM golang:1.24-bookworm AS build
 
 WORKDIR /src
 ENV GOFLAGS=-mod=mod \

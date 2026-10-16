@@ -36,9 +36,16 @@ func main() {
 		logger.Warn("config.Load 失败，使用默认监听地址", "error", err, "addr", addr)
 	}
 
+	// 种子装载 fail-closed：env 指定了种子文件但缺失/非法时拒绝启动，
+	// 绝不带空库静默对外服务。
+	handler, err := mockerp.NewHandler(logger, os.Getenv("MOCKERP_SEED_FILE"))
+	if err != nil {
+		logger.Error("mock-erp 启动失败", "error", err)
+		os.Exit(1)
+	}
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           mockerp.NewHandler(logger),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

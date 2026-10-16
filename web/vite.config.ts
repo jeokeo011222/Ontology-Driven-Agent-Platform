@@ -19,6 +19,12 @@ export default defineConfig({
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
+      // A2A 协议标准路径（Agent Card 预览页签）：不在 /api/v1 前缀下，
+      // 由前端带 Bearer Token 直取；生产走 nginx 同名反代。
+      '/.well-known': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
     },
   },
   build: {

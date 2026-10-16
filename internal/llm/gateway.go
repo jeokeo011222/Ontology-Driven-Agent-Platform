@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 
 	"odap/internal/platform/clock"
 	"odap/internal/platform/errors"
@@ -93,6 +94,44 @@ func (r *Router) Resolve(req CompletionRequest) (Resolved, error) {
 	return Resolved{}, errors.Ef(errors.CodeUnavailable,
 		"llm: 无满足能力要求的合格模型（model=%q，need_tools=%v，need_seed=%v）",
 		req.ModelID, needTools, needSeed)
+}
+
+// ResolveEmbedding 为向量嵌入调用做**点名专用**路由。
+//
+// 与 Resolve 的语义差异（§6.2 极端形式）：嵌入向量与训练模型强绑定，向量
+// 空间不可跨模型混用，因此这里**不存在**"按能力择优"分支：
+//   - 未点名 ModelID → 直接 UNAVAILABLE（Gateway.Embed 已前置拦截，这里兜底）；
+//   - 点名的 ModelID 有固定路由且端点实现 EmbeddingProvider 且能力声明
+//     Embeddings → 采用；
+//   - 点名的 ModelID 已登记但当前不可用（未装配/适配器不支持/能力未声明）
+//     → UNAVAILABLE 并携带原因，绝不换模型顶上。
+func (r *Router) ResolveEmbedding(req EmbeddingRequest) (Resolved, error) {
+	if r == nil || len(r.Providers) == 0 {
+		return Resolved{}, errors.E(errors.CodeUnavailable, "llm: 未配置任何模型供应商")
+	}
+	model := strings.TrimSpace(req.ModelID)
+	if model == "" {
+		return Resolved{}, errors.E(errors.CodeUnavailable,
+			"llm: 嵌入调用必须点名已登记且支持 embeddings 的模型（禁止能力择优回落）")
+	}
+	if name, ok := r.Routing[model]; ok {
+		if p, found := r.Providers[name]; found {
+			if _, implement := p.(EmbeddingProvider); implement && p.Capabilities().Embeddings {
+				return resolvedFor(p), nil
+			}
+			return Resolved{}, errors.Ef(errors.CodeUnavailable,
+				"llm: 模型 %q 的端点 %s 未声明 embeddings 能力（或适配器不支持），拒绝嵌入调用", model, p.Name())
+		}
+	}
+	if reason, registered := r.Registered[model]; registered {
+		if reason == "" {
+			reason = "端点未装配或能力不满足"
+		}
+		return Resolved{}, errors.Ef(errors.CodeUnavailable,
+			"llm: 模型 %q 已登记但当前不可用（%s）；拒绝回落到其他模型", model, reason)
+	}
+	return Resolved{}, errors.Ef(errors.CodeUnavailable,
+		"llm: 模型 %q 未在 Model Registry 登记，无法用于向量嵌入（请先在「模型与推理」页登记模型版本并勾选 embeddings 能力，然后重启 API 装配）", model)
 }
 
 // preferNativeSchema 把声明原生 Schema 能力的端点前置（组内顺序不变，保持确定性）。
@@ -208,6 +247,80 @@ func (g *Gateway) Complete(ctx context.Context, tenantID ids.ID, req CompletionR
 		}
 	}
 	return comp, nil
+}
+
+// Embed 执行一次受治理的向量嵌入调用（与 Complete 同一条治理链：
+// 限流 → 预算 → 点名路由 → 调用 → 用量记账）。
+//
+// 与补全的关键差异：**只允许点名路由**。嵌入向量与训练模型强绑定——不同
+// 模型的向量空间不可混用，混用会让检索结果静默失真，因此按能力择优回落
+// 在这里是制造静默数据污染，必须禁用（§6.2 的极端形式）。
+// 未点名、点名的模型未登记、或登记的模型未声明 Embeddings 能力，一律
+// UNAVAILABLE 明确失败。
+func (g *Gateway) Embed(ctx context.Context, tenantID ids.ID, req EmbeddingRequest) (EmbeddingResponse, error) {
+	if tenantID.IsZero() {
+		return EmbeddingResponse{}, errors.E(errors.CodeValidationFailed, "llm: tenantID 不能为空")
+	}
+	if strings.TrimSpace(req.ModelID) == "" {
+		return EmbeddingResponse{}, errors.E(errors.CodeUnavailable,
+			"llm: 嵌入调用必须点名已登记且支持 embeddings 的模型（向量维度与模型强绑定，禁止能力择优回落）")
+	}
+	// 1. 限流（与补全共用同一档位与计数器：嵌入是真实的模型调用，消耗配额）。
+	if g.Limiter != nil {
+		release, err := g.Limiter.Acquire(ctx, tenantID, g.kind())
+		if err != nil {
+			return EmbeddingResponse{}, err
+		}
+		defer release()
+	}
+	// 2. 预算：嵌入只有输入侧费用，按文本规模粗估（与 estimateCost 同量级系数）。
+	if g.Budget != nil {
+		in := 0
+		for _, t := range req.Texts {
+			in += len(t)/4 + 1
+		}
+		if err := g.Budget.Check(ctx, tenantID, float64(in)*0.000001); err != nil {
+			return EmbeddingResponse{}, err
+		}
+	}
+	// 3. 点名路由（仅 Routing 命中且 Provider 实现 EmbeddingProvider 且能力声明 Embeddings）。
+	resolved, err := g.router().ResolveEmbedding(req)
+	if err != nil {
+		return EmbeddingResponse{}, err
+	}
+	if resolved.EndpointID.IsZero() {
+		g.log().Warn("端点身份缺失：用量账本将无法落账（Provider 未经 Model Registry 装配）",
+			"provider", resolved.Provider.Name(), "model", req.ModelID)
+	}
+	// 4. 调用。
+	ep, ok := resolved.Provider.(EmbeddingProvider)
+	if !ok {
+		return EmbeddingResponse{}, errors.Ef(errors.CodeUnavailable,
+			"llm: 端点 %s 的适配器未实现向量嵌入，拒绝调用", resolved.Provider.Name())
+	}
+	resp, err := ep.Embed(ctx, req)
+	if err != nil {
+		return EmbeddingResponse{}, classifyProviderError(err)
+	}
+	// 5. 用量记账：embeddings 只有输入侧计费（usage.prompt_tokens）。
+	if g.Ledger != nil {
+		requestID := req.IdempotencyKey
+		if requestID == "" {
+			requestID = ids.New().String()
+		}
+		if err := g.Ledger.Record(ctx, tenantID, Usage{
+			RequestID:        requestID,
+			EndpointID:       resolved.EndpointID,
+			ModelRevisionID:  resolved.ModelRevisionID,
+			InputTokens:      int64(resp.InputTokens),
+			Source:           UsageSourceProviderReported,
+			Currency:         "USD",
+			SettlementStatus: SettlementSettled,
+		}); err != nil {
+			g.log().Warn("用量记账失败", "error", err)
+		}
+	}
+	return resp, nil
 }
 
 func (g *Gateway) router() *Router {

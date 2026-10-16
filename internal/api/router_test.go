@@ -85,6 +85,7 @@ var contractEndpoints = []string{
 	"GET /api/v1/policies",
 	"POST /api/v1/policies",
 	"GET /api/v1/policies/{id}/versions",
+	"POST /api/v1/policies/{id}/versions",
 	"PATCH /api/v1/policies/{key}/versions/{version}",
 	"DELETE /api/v1/policies/{key}/versions/{version}",
 	// Approval
@@ -132,6 +133,7 @@ var contractEndpoints = []string{
 	"GET /api/v1/admin/users/{id}",
 	"PATCH /api/v1/admin/users/{id}",
 	"DELETE /api/v1/admin/users/{id}",
+	"POST /api/v1/admin/subjects/{id}/disable",
 	// Admin Ontology Categories
 	"GET /api/v1/admin/ontology-categories",
 	"POST /api/v1/admin/ontology-categories",
@@ -156,8 +158,30 @@ var contractEndpoints = []string{
 	"POST /api/v1/admin/model-endpoints/{endpoint_id}/models",
 	"DELETE /api/v1/admin/model-endpoints/{endpoint_id}/models/{model_revision_id}",
 	"GET /api/v1/admin/connectors",
+	"POST /api/v1/admin/connectors/{id}/test",
 	"GET /api/v1/ops/alerts",
 	"GET /api/v1/releases",
+	"POST /api/v1/releases/{id}/promote",
+	"POST /api/v1/releases/{id}/rollback",
+	// 模块 A：企业知识问答本体（知识库）
+	"POST /api/v1/knowledge/documents",
+	"GET /api/v1/knowledge/documents",
+	"GET /api/v1/knowledge/documents/{id}",
+	"DELETE /api/v1/knowledge/documents/{id}",
+	"POST /api/v1/knowledge/jobs/{id}/retry",
+	// 模块 C：A2A 多智能体协同（注册表 + JSON-RPC 网关）
+	"GET /api/v1/a2a/remote-agents",
+	"POST /api/v1/a2a/remote-agents",
+	"GET /api/v1/a2a/remote-agents/{id}",
+	"PATCH /api/v1/a2a/remote-agents/{id}",
+	"DELETE /api/v1/a2a/remote-agents/{id}",
+	"POST /api/v1/a2a/remote-agents/{id}/probe",
+	"POST /api/v1/a2a",
+	// 模块 D：本体 Action 管理（查询侧）
+	"GET /api/v1/actions",
+	"GET /api/v1/actions/{id}",
+	"POST /api/v1/actions/{id}/similar",
+	"GET /api/v1/actions/{id}/prov.ttl",
 }
 
 func TestAllContractEndpointsRegistered(t *testing.T) {

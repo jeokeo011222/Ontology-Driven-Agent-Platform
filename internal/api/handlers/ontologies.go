@@ -143,14 +143,15 @@ func (h *Handler) ValidateOntology(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, err)
 		return
 	}
-	if len(parsed.Shapes) == 0 {
-		// 只有类、没有形状的本体：没有可执行的规则。此时"通过"是无意义的
-		// （任何数据都会通过），必须显式拒绝，否则会把"没写约束"伪装成"数据合规"。
+	// 只有类、没有任何约束来源（shapes 与 constraints 双通道全空）的本体：
+	// 没有可执行的规则。此时"通过"是无意义的（任何数据都会通过），必须显式拒绝，
+	// 否则会把"没写约束"伪装成"数据合规"。
+	if len(parsed.Shapes) == 0 && len(parsed.Constraints) == 0 {
 		err := errors.E(errors.CodeValidationFailed,
-			"本体未定义 SHACL 形状（manifest.shapes 为空）：没有形状就没有可执行的约束，无法判定为通过").
+			"本体未定义任何可执行约束（manifest.shapes 与 manifest.constraints 均为空）：没有约束就没有可判定的规则，无法判定为通过").
 			WithDetails(map[string]any{
 				"ontology_id": ontologyID.String(), "version": snap.Version,
-				"hint": "请在生成时让模型产出 shapes，或手工为 manifest 补上 shapes",
+				"hint": "请在生成时让模型产出 shapes（形状骨架）或 constraints（业务硬约束），或手工为 manifest 补上",
 			})
 		h.recordAudit(r, id, "OntologyValidationRejected", "ontology.validate", "DENIED", "ontology",
 			ontologyID.String(), ids.ID{}, map[string]any{
@@ -497,6 +498,7 @@ func (h *Handler) GetOntologyArtifacts(w http.ResponseWriter, r *http.Request) {
 			"tbox_triples":   len(tbox),
 			"abox_triples":   len(abox),
 			"shapes":         len(parsed.Shapes),
+			"constraints":    len(parsed.Constraints),
 			"target_classes": len(parsed.TargetClassIRIs(ns)),
 			"instances":      parsed.InstanceCount(),
 		},

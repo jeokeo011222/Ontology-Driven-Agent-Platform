@@ -75,8 +75,10 @@ type ToolVersion struct {
 type CatalogRepository interface {
 	SelectAgentByKey(ctx context.Context, tenantID ids.ID, agentKey string) (AgentRef, error)
 	SelectAgentVersions(ctx context.Context, tenantID, agentID ids.ID) ([]AgentVersion, error)
+	SelectAgentVersionByID(ctx context.Context, tenantID, versionID ids.ID) (AgentVersion, error)
 	SelectToolByKey(ctx context.Context, tenantID ids.ID, toolKey string) (ToolRef, error)
 	SelectToolVersion(ctx context.Context, tenantID, toolID ids.ID, version string) (ToolVersion, error)
+	SelectLatestPublishedTool(ctx context.Context, tenantID, toolID ids.ID) (InvocableTool, error)
 }
 
 // CatalogService 提供智能体/工具版本解析（仅 PUBLISHED 可被运行时绑定）。
@@ -125,6 +127,27 @@ func (s *CatalogService) ResolveAgentVersion(ctx context.Context, tenantID ids.I
 	}
 	return AgentVersion{}, errors.Ef(errors.CodePluginVersionConflict,
 		"智能体 %q 版本 %s 不存在", agentKey, version)
+}
+
+// ResolveAgentVersionByID 按 agent_version_id 解析（Run 绑定的是版本 id 而非 key，
+// 第二篇 §4.2）。仅 PUBLISHED 可解析：不存在 → CodePluginNotFound；
+// 存在但未发布 → CodePluginVersionConflict（运行期绝不绑定未发布版本）。
+func (s *CatalogService) ResolveAgentVersionByID(ctx context.Context, tenantID, versionID ids.ID) (AgentVersion, error) {
+	if versionID.IsZero() {
+		return AgentVersion{}, errors.E(errors.CodeInvalidArgument, "agent_version_id 不合法")
+	}
+	v, err := s.repo.SelectAgentVersionByID(ctx, tenantID, versionID)
+	if err != nil {
+		if notFound(err) {
+			return AgentVersion{}, errors.Ef(errors.CodePluginNotFound, "智能体版本 %s 不存在", versionID)
+		}
+		return AgentVersion{}, errors.Wrap(err, errors.CodeInternal, "查询智能体版本失败")
+	}
+	if v.Status != VersionPublished {
+		return AgentVersion{}, errors.Ef(errors.CodePluginVersionConflict,
+			"智能体版本 %s 状态为 %s，仅 PUBLISHED 可被运行时绑定", versionID, v.Status)
+	}
+	return v, nil
 }
 
 // ListAgentVersions 列出智能体的全部版本（按版本号降序）。
@@ -219,6 +242,26 @@ func (r pgCatalogRepository) SelectAgentVersions(ctx context.Context, tenantID, 
 		return rows.Err()
 	})
 	return out, err
+}
+
+func (r pgCatalogRepository) SelectAgentVersionByID(ctx context.Context, tenantID, versionID ids.ID) (AgentVersion, error) {
+	var v AgentVersion
+	err := readInTenantTx(ctx, r.pool, tenantID, func(tx pgx.Tx) error {
+		row := tx.QueryRow(ctx,
+			`SELECT id, tenant_id, agent_id, plugin_version_id, version, config, prompt_template,
+			        input_schema, output_schema, dependency_manifest, status, content_digest, created_at, published_at
+			 FROM registry.agent_versions WHERE tenant_id = $1 AND id = $2`,
+			tenantID.String(), versionID.String())
+		var scanErr error
+		if v, scanErr = scanAgentVersion(row); scanErr != nil {
+			if scanErr == pgx.ErrNoRows {
+				return errRepoNotFound
+			}
+			return scanErr
+		}
+		return nil
+	})
+	return v, err
 }
 
 func scanAgentVersion(row pgx.Row) (AgentVersion, error) {

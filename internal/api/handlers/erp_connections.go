@@ -411,9 +411,9 @@ func probeReachable(ctx context.Context, baseURL string) (bool, string) {
 //
 // 返回 (port, connectionID, usedSource, err)：usedSource 标明端口来源
 // （"db:<id>" 或 "env"），供调用方留痕与诊断，绝不静默混合两种来源。
-func (h *Handler) resolveErpPort(r *http.Request, systemCode string) (erp.Port, string, string, error) {
+func (h *Handler) resolveErpPort(ctx context.Context, systemCode string) (erp.Port, string, string, error) {
 	// 1) 租户级 DB 连接优先。
-	secret, serr := h.deps.Store.ResolveActiveErpConnection(r.Context(), systemCode)
+	secret, serr := h.deps.Store.ResolveActiveErpConnection(ctx, systemCode)
 	if serr != nil {
 		return nil, "", "", serr
 	}
@@ -444,4 +444,85 @@ func (h *Handler) resolveErpPort(r *http.Request, systemCode string) (erp.Port, 
 	}
 	return nil, "", "", errors.E(errors.CodeUnavailable,
 		"未配置可用的 ERP 连接：请在「与ERP集成」页创建连接，或为 API 进程配置 ERP 环境变量")
+}
+
+// testConnectorRequest 是 POST /api/v1/admin/connectors/{id}/test 的请求体。
+type testConnectorRequest struct {
+	Probe string `json:"probe,omitempty"`
+}
+
+// TestConnector 处理 POST /api/v1/admin/connectors/{id}/test —— 连接器在线探测。
+//
+// 连接器 = registry 中 ACTIVE 安装的插件（AdminConnectors 同一真源）。探测语义
+// fail-closed，绝不假绿：只有能构造出真实探针的类型才返回结论——
+//   - ERP 类连接器（plugin_key 可识别为 nc65 / mock-erp）：复用 resolveErpPort
+//     （租户 DB 连接优先、env 回落）做真实 Health 探测；
+//   - 其他类型（AGENT/TOOL/WORKFLOW 插件或未知连接器）：503 UNAVAILABLE 并说明
+//     该类型无在线探针——"不知道怎么测"必须说出口，而不是回一个 ok:true。
+//
+// 探测结论以 200 + {ok, detail} 返回（探测失败是数据，不是服务器错误）；
+// 不落库、不产生任何业务写入，凭据只在本请求内存中存活。
+func (h *Handler) TestConnector(w http.ResponseWriter, r *http.Request) {
+	id, err := h.identity(r)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	if h.deps.Store == nil {
+		h.fail(w, r, unavailable("持久化适配器未装配"))
+		return
+	}
+	connID, err := h.pathID(r, "id")
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	var req testConnectorRequest
+	if err := decodeOptionalJSON(r, &req); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	echoIdempotency(w, r)
+	conn, err := h.deps.Store.GetActiveConnector(r.Context(), connID.String())
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	pluginKey, _ := conn["plugin_key"].(string)
+	systemCode := erpSystemCodeForPlugin(pluginKey)
+	if systemCode == "" {
+		h.fail(w, r, errors.Ef(errors.CodeUnavailable,
+			"连接器 %s（%s）不是 ERP 连接器，暂无在线探针可用", connID, pluginKey))
+		return
+	}
+	port, connRef, source, err := h.resolveErpPort(r.Context(), systemCode)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	health, herr := port.Health(r.Context(), erp.ConnectionID("probe"))
+	detail := health.Message
+	if herr != nil {
+		detail = "连接测试失败：" + herr.Error()
+	}
+	h.recordAudit(r, id, "ConnectorTested", "erp_connector.test", "SUCCESS",
+		"erp_connection", connRef, ids.ID{},
+		map[string]any{"connector_id": connID.String(), "plugin_key": pluginKey,
+			"source": source, "ok": herr == nil && health.Healthy, "idempotency_key": idempotencyKey(r)})
+	h.writeJSON(w, http.StatusOK, map[string]any{"ok": herr == nil && health.Healthy, "detail": detail})
+}
+
+// erpSystemCodeForPlugin 从插件标识识别 ERP 系统码；非 ERP 类返回空串。
+func erpSystemCodeForPlugin(pluginKey string) string {
+	k := strings.ToLower(strings.TrimSpace(pluginKey))
+	switch {
+	case k == "", k == "-":
+		return ""
+	case strings.Contains(k, "nc65"):
+		return "nc65"
+	case strings.Contains(k, "mock") && strings.Contains(k, "erp"):
+		return "mock-erp"
+	default:
+		return ""
+	}
 }

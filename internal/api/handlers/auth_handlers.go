@@ -293,6 +293,52 @@ func (h *Handler) AdminDeleteUser(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// disableSubjectRequest 是 POST /api/v1/admin/subjects/{id}/disable 的请求体。
+type disableSubjectRequest struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+// AdminDisableSubject 处理 POST /api/v1/admin/subjects/{id}/disable（§14）。
+//
+// 主体（subject）即 iam.users 中的用户：停用 = status=DISABLED + 递增
+// subject_version（第三篇 §4.4 撤销传播——旧会话令牌随版本失效）。
+// 与 AdminDeleteUser 走同一 store 能力，但语义上"停用"是显式管理动作而非删除，
+// 因此响应返回 {ok:true} 并保留 reason 进审计。
+func (h *Handler) AdminDisableSubject(w http.ResponseWriter, r *http.Request) {
+	id, err := h.identity(r)
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	if h.deps.Store == nil {
+		h.fail(w, r, unavailable("持久化适配器未装配"))
+		return
+	}
+	uid, err := h.pathID(r, "id")
+	if err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	var req disableSubjectRequest
+	if err := decodeOptionalJSON(r, &req); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	if uid == id.SubjectID {
+		h.fail(w, r, errors.E(errors.CodeInvalidArgument, "不能停用当前登录的自身账号"))
+		return
+	}
+	echoIdempotency(w, r)
+	if err := h.deps.Store.DisableUser(r.Context(), id.TenantID, uid); err != nil {
+		h.fail(w, r, err)
+		return
+	}
+	h.recordAudit(r, id, "AdminSubjectDisabled", "iam.admin.subject.disable", "SUCCESS",
+		"user", uid.String(), ids.ID{},
+		map[string]any{"subject_id": uid.String(), "reason": req.Reason, "idempotency_key": idempotencyKey(r)})
+	h.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 // --- Admin Organizations CRUD ---
 
 // AdminListOrgs GET /api/v1/admin/organizations（cursor 分页，默认 10 行 + ?q=）

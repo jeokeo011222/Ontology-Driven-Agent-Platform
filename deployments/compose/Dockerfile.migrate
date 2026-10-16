@@ -5,7 +5,7 @@
 #   Mock ERP：migrate up --dir mockerp/migrations （--dir 含 "mockerp" → 读 MOCKERP_DATABASE_URL）
 #   MIGRATIONS_DIR 环境变量作为默认迁移目录（config.MigrationsDir），可被 --dir 覆盖。
 # 迁移 SQL 目录一并打入镜像，运行时以 WORKDIR /src 解析相对路径。
-FROM golang:1.23-bookworm AS build
+FROM golang:1.24-bookworm AS build
 
 WORKDIR /src
 ENV GOFLAGS=-mod=mod \
