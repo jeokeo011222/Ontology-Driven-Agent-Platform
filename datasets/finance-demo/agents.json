@@ -11,7 +11,7 @@
       "name": "费用审核助手",
       "description": "演示 Agent 插件",
       "version_id": "88888888-8888-4888-8888-888888888888",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "manifest": {
         "kind": "AGENT",
         "agent_key": "finance-expense-auditor"
@@ -19,7 +19,7 @@
     },
     "version": {
       "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "status": "PUBLISHED",
       "input_schema": {
         "type": "object",
@@ -75,12 +75,12 @@
       "name": "AI 自动生成企业本体",
       "description": "平台内置智能体（不可修改）",
       "version_id": "d0000001-0000-4000-8000-000000000001",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "manifest": { "kind": "AGENT", "agent_key": "ontology-generator" }
     },
     "version": {
       "id": "e0000001-0000-4000-8000-000000000001",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "status": "PUBLISHED",
       "input_schema": {
         "type": "object",
@@ -116,12 +116,12 @@
       "name": "AI 自动生成 Agent",
       "description": "平台内置智能体（不可修改）",
       "version_id": "d0000002-0000-4000-8000-000000000002",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "manifest": { "kind": "AGENT", "agent_key": "agent-generator" }
     },
     "version": {
       "id": "e0000002-0000-4000-8000-000000000002",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "status": "PUBLISHED",
       "input_schema": {
         "type": "object",
@@ -150,12 +150,12 @@
       "name": "AI 自动生成工具",
       "description": "平台内置智能体（不可修改）",
       "version_id": "d0000003-0000-4000-8000-000000000003",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "manifest": { "kind": "AGENT", "agent_key": "tool-generator" }
     },
     "version": {
       "id": "e0000003-0000-4000-8000-000000000003",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "status": "PUBLISHED",
       "input_schema": {
         "type": "object",
@@ -184,12 +184,12 @@
       "name": "AI 自动生成工作流",
       "description": "平台内置智能体（不可修改）",
       "version_id": "d0000004-0000-4000-8000-000000000004",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "manifest": { "kind": "AGENT", "agent_key": "workflow-generator" }
     },
     "version": {
       "id": "e0000004-0000-4000-8000-000000000004",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "status": "PUBLISHED",
       "input_schema": {
         "type": "object",
@@ -218,12 +218,12 @@
       "name": "本体校验（SHACL）",
       "description": "平台内置智能体（不可修改）",
       "version_id": "d0000005-0000-4000-8000-000000000005",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "manifest": { "kind": "AGENT", "agent_key": "ontology-validator" }
     },
     "version": {
       "id": "e0000005-0000-4000-8000-000000000005",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "status": "PUBLISHED",
       "input_schema": {
         "type": "object",
@@ -258,12 +258,12 @@
       "name": "运行编排（Harness）",
       "description": "平台内置智能体（不可修改）",
       "version_id": "d0000006-0000-4000-8000-000000000006",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "manifest": { "kind": "AGENT", "agent_key": "run-orchestrator" }
     },
     "version": {
       "id": "e0000006-0000-4000-8000-000000000006",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "status": "PUBLISHED",
       "input_schema": {
         "type": "object",
@@ -292,12 +292,12 @@
       "name": "ERP 操作对账",
       "description": "平台内置智能体（不可修改）",
       "version_id": "d0000007-0000-4000-8000-000000000007",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "manifest": { "kind": "AGENT", "agent_key": "erp-reconciler" }
     },
     "version": {
       "id": "e0000007-0000-4000-8000-000000000007",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "status": "PUBLISHED",
       "input_schema": {
         "type": "object",
@@ -326,12 +326,12 @@
       "name": "模型调用治理网关",
       "description": "平台内置智能体（不可修改）",
       "version_id": "d0000008-0000-4000-8000-000000000008",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "manifest": { "kind": "AGENT", "agent_key": "llm-governance" }
     },
     "version": {
       "id": "e0000008-0000-4000-8000-000000000008",
-      "version": "0.1.0",
+      "version": "1.0.0",
       "status": "PUBLISHED",
       "input_schema": {
         "type": "object",

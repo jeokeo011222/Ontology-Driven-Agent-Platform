@@ -1,7 +1,7 @@
 {
   "name": "odap-web",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "description": "ODAP 企业级前端 UI —— 业务用户工作台、管理控制台与平台配置中心",
   "scripts": {

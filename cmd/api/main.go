@@ -304,7 +304,7 @@ func serve() error {
 	// KnowledgeSearcher 两条腿独立 fail-closed：SearchTerms 走 trigram（pg_trgm 可用就用），
 	// SearchVector 需 Gateway.Embed + KBEmbeddingModel 双重就绪，否则返回 CodeUnavailable。
 	mcpDeps := mcp.Deps{
-		Version: env("ODAP_VERSION", "dev"),
+		Version: env("ODAP_VERSION", "1.0.0"),
 		Ontology: &ontologyListerAdapter{
 			Store: deps.Store,
 		},
