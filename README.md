@@ -37,6 +37,10 @@
 
 > 一句话：**先有语义，再有智能；先有治理，再有自动化。**
 
+| 问题 | 常见做法 | ODAP 的做法（知识库） |
+| --- | --- | --- |
+| 企业知识散在文档里，问无依据 | 把整个文档目录塞进提示词 | 文档上传后**分块 → pgvector 向量嵌入 → 按本体约束抽取成图**；检索与图互相印证，回答可溯源。未配置嵌入模型时**明确报错，不假装能答** |
+
 ---
 
 ## ✨ 核心能力
@@ -55,6 +59,33 @@
 
 在「AI 业务助手」里选一套本体作为**审查依据**，用自然语言描述业务目标，系统会把请求逐条对照本体的规则校验，并给出结论。
 任务详情页保留**完整的本体处理过程链路**，每一步都能说明「依据哪条规则、得出什么判断」。
+
+### 📚 知识库：企业文档变成可检索、可溯源的知识
+
+文档（Word / PDF / Markdown / Excel）上传后走真实处理管道：解析 → 分块 → **pgvector 1024 维嵌入** → 按本体约束抽取结构化知识入三元组图；向量检索与图查询互相印证。任务进度实时可见（PENDING → RUNNING → SUCCEEDED / FAILED），失败可重试、原因如实展示——嵌入模型未接入时上传前置校验**直接拒绝**，不产出空向量装样子。
+
+### 🧠 推理引擎：本体规则不只是文档，是可执行的推理机
+
+Go 自研推理内核，内置 RDFS 与 OWL 2 RL 规则集（代码承载本体、库存启停开关）：
+
+- **前向推理**（Forward Chaining）：规则驱动派生新三元组，逐迭代推进并落账派生记录
+- **后向推理**（Backward Chaining）：给定目标反推证据链，结论必须能说出「依据哪条规则」
+- **增量推理**：本体版本演进时只重算受影响部分
+- **一致性检查**：反例检测 + 约束校验，矛盾如实上报
+- 对外提供 **gRPC 契约**（`contracts/proto/reasoning.proto`），推理运行全程留痕，派生的动作自动进动作台账
+
+### 🔁 A2A 协同：平台即 Agent，智能体之间说同一种话
+
+实现 Google **Agent2Agent** 协议要点：
+
+- **Server 发布**：`GET /.well-known/agent.json` 实时装配 Agent Card——技能汇总自 registry，url 按请求 Host 构造，绝不落静态数据
+- **JSON-RPC 2.0 网关**：`POST /api/v1/a2a` 单端点，方法白名单 `message/send`、`tasks/sendSubscribe`（SSE 推流）、`tasks/get / list / cancel`；任务状态映射 Run 17 态 → A2A 4 态
+- **远程注册表**：登记远端 A2A Server 的地址与出站认证引用（环境变量名），明文凭据绝不落库；连通性探测如实记录结果
+- 缺省路由 fail-closed：没有可执行的智能体配置时明确报错，不伪造任务完成
+
+### 🎯 动作管理：每一次行动都是一等公民
+
+`QUERY / UPDATE / INFER / ACTION / TOOL` 五类动作节点统一落账，详情页展示 **PROV-O 溯源命名图**（`prov:{tenant}:{action_id}`），支持 Turtle 导出与 **pgvector 相似动作检索**——历史上相似的处理先例一目了然。工具调用、推理派生、审批结果、A2A 任务全部汇聚于此，构成平台的行为总账。
 
 ### 🔧 工具即真实执行：没有 mock，也不会假装成功
 
@@ -105,19 +136,21 @@ flowchart TB
     subgraph UI["接入层 · React + TypeScript"]
         direction LR
         W["业务工作台<br/>工作台 · AI 业务助手 · 我的任务 · 审批中心 · 业务应用"]
-        C["管理控制台<br/>概览 · 企业本体 · Agent · 工具 · 工作流 · 模型 · 与 ERP 集成 · 审计"]
+        C["管理控制台<br/>概览 · 企业本体 · 知识库 · 推理引擎 · Agent · 技能 · 工具 · 工作流<br/>A2A 协同 · 动作管理 · 模型 · 与 ERP 集成 · 审计"]
     end
 
     subgraph API["internal/api · HTTP 边界"]
         direction LR
         R["路由 / 鉴权 / 权限守卫"]
         H["Handler · 只做传输与校验"]
+        A2A["A2A 网关<br/>Agent Card · JSON-RPC 2.0"]
     end
 
     subgraph DOMAIN["领域层 · internal/*"]
         direction LR
         IAM["identity / authorization"]
         SEM["ontology · registry"]
+        KQ["knowledge · reasoning · action"]
         RUN["harness · agent · execution"]
         GOV["approval · audit · evidence"]
     end
@@ -127,6 +160,7 @@ flowchart TB
         LLM["llm 治理网关<br/>限流 · 预算 · 缓存 · 路由"]
         ERP["erp 适配器<br/>NC65 等"]
         GRS["graphstore<br/>PostgreSQL / Fuseki"]
+        VEC["pgvector<br/>1024 维嵌入"]
         STORE["objectstore<br/>local / S3"]
     end
 
@@ -231,13 +265,13 @@ docker compose --profile observability up -d   # 本地 OTLP collector（4317/43
 
 ```
 cmd/            api / worker / migrate / mock-erp —— 只做装配、配置读取、启动与优雅关闭
-internal/       领域逻辑（16 个一级包）：api / identity / authorization / registry /
-                ontology / harness / agent / execution / erp / docingest / tools /
-                audit / evidence / llm / seed / platform
-contracts/      对外契约：openapi.yaml、事件与 JSON Schema
+internal/       领域逻辑（20 个一级包）：api / identity / authorization / registry /
+                ontology / knowledge / reasoning / action / harness / agent / execution /
+                erp / docingest / tools / toolruntime / audit / evidence / llm / seed / platform
+contracts/      对外契约：openapi.yaml、gRPC（reasoning.proto）与 JSON Schema
 migrations/     平台库迁移（mockerp/migrations 负责 Mock ERP 库，账号与生命周期独立）
 deployments/    compose Dockerfile、nginx 模板、OTel 配置、运维脚本
-datasets/       演示与评估数据集（finance-demo 为可运行样例）
+datasets/       演示与评估数据集（finance-demo 为可运行样例，含 Mock ERP 启动种子）
 ontology-packages/  本体包（Turtle 等）
 web/            React + TypeScript 前端
 tests/          跨模块测试：unit / contract / integration / e2e / security / fault-injection
@@ -333,6 +367,13 @@ bash tools/dev-run.sh go run ./cmd/api seed --dataset finance-demo
 - [x] 工具真实执行 + 人工审批门禁
 - [x] ERP 适配器（用友 NC65）与类型字典
 - [x] 审计哈希链 + 证据包
+- [x] 技能独立资源 + WASM 脚本工具执行器
+- [x] 知识库：文档分块 → pgvector 嵌入 → 本体约束知识抽取入图
+- [x] 推理引擎：前向 / 后向 / 增量推理 + 一致性检查（gRPC 契约）
+- [x] A2A 协同：Agent Card 发布 + JSON-RPC 2.0 网关 + 远程注册表
+- [x] 动作管理：五类一等动作 + PROV-O 溯源 + 相似动作检索
+- [ ] OCR / 预算系统等真实后端接入（当前明确报不可用，不降级）
+- [ ] 知识库嵌入模型一键配置向导（当前依赖「模型与推理」接入 1024 维嵌入端点）
 
 ---
 
