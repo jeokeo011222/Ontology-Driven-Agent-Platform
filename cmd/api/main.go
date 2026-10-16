@@ -45,6 +45,7 @@ import (
 	"odap/internal/harness"
 	"odap/internal/identity"
 	"odap/internal/llm"
+	"odap/internal/mcp"
 	"odap/internal/ontology/graphstore"
 	"odap/internal/platform/clock"
 	"odap/internal/platform/ids"
@@ -297,11 +298,36 @@ func serve() error {
 		corsCfg = middleware.DefaultDevCORS()
 	}
 
+	// ---- MCP 服务端装配 ----
+	// /api/v1/mcp 端点：原来返回 503（Options.MCP 为 nil），
+	// 这里把 Store/GraphStore/Catalog/KB embedFn 适配为 mcp.Deps 的 4 个依赖接口。
+	// KnowledgeSearcher 两条腿独立 fail-closed：SearchTerms 走 trigram（pg_trgm 可用就用），
+	// SearchVector 需 Gateway.Embed + KBEmbeddingModel 双重就绪，否则返回 CodeUnavailable。
+	mcpDeps := mcp.Deps{
+		Version: env("ODAP_VERSION", "dev"),
+		Ontology: &ontologyListerAdapter{
+			Store: deps.Store,
+		},
+		Graph: graphStore, // graphstore.GraphStore.Match 签名与 mcp.GraphReader 完全一致
+		Agent: &agentRunnerAdapter{
+			Store:   deps.Store,
+			Catalog: deps.Catalog,
+		},
+		KB: &knowledgeSearcherAdapter{
+			Store:            deps.Store,
+			EmbedFn:          embedFn, // 复用上面为 action.Recorder 构造的同一网关闭包
+			KBEmbeddingModel: deps.KBEmbeddingModel,
+		},
+		DefaultKBEmbeddingModel: deps.KBEmbeddingModel,
+	}
+	mcpSrv := mcp.NewMCPServer(mcpDeps, logger)
+
 	router := api.NewRouter(deps, api.Options{
 		Logger:    logger,
 		Resolver:  resolver,
 		CORS:      corsCfg,
 		Reasoning: reasoningSvc,
+		MCP:       mcpSrv,
 	})
 
 	// 开发环境：启动 Outbox→SSE 桥接，使实时通道有真实事件来源。

@@ -20,6 +20,17 @@ var contractEndpoints = []string{
 	"POST /api/v1/auth/login",
 	"POST /api/v1/auth/logout",
 	"GET /api/v1/auth/session",
+	// Chat 会话（2026-10-16 P0-4 新增）
+	"POST /api/v1/chat/sessions",
+	"GET /api/v1/chat/sessions",
+	"GET /api/v1/chat/sessions/{id}",
+	"PATCH /api/v1/chat/sessions/{id}",
+	"DELETE /api/v1/chat/sessions/{id}",
+	"POST /api/v1/chat/sessions/{id}/archive",
+	"POST /api/v1/chat/sessions/{id}/messages",
+	"GET /api/v1/chat/sessions/{id}/messages",
+	// 协同编辑 WebSocket（P1-3 新增：y-websocket 二进制帧中继）
+	"GET /api/v1/collab/{ontologyId}/ws",
 	// Run
 	"POST /api/v1/runs",
 	"GET /api/v1/runs",
@@ -46,6 +57,8 @@ var contractEndpoints = []string{
 	"POST /api/v1/ontologies/{id}/validate",
 	"POST /api/v1/ontologies/{id}/publish",
 	"GET /api/v1/ontologies/{id}/artifacts",
+	// 本体自然语言问答
+	"POST /api/v1/ontology/nl-query",
 	// Plugin
 	"GET /api/v1/plugins",
 	"POST /api/v1/plugins",

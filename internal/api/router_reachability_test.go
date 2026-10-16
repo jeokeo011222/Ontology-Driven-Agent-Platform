@@ -32,6 +32,7 @@ import (
 var parameterValues = map[string]string{
 	"id":          "11111111-1111-1111-1111-111111111111",
 	"endpoint_id": "22222222-2222-2222-2222-222222222222",
+	"ontologyId":  "33333333-3333-3333-3333-333333333333",
 	"key":         "demo-policy",
 	"version":     "1",
 }
@@ -76,7 +77,10 @@ func TestEveryDeclaredRouteIsReachable(t *testing.T) {
 		// /api/v1/stream 是 SSE 长连接端点，正常语义下会保持连接不返回，
 		// 因此不做单次请求探测；它的挂载方式与其余受保护端点完全同构
 		// （同一条 rs 循环、同一个受保护链），由声明表与下方 L2 回归用例共同覆盖。
-		if rt.Pattern == "/api/v1/stream" {
+		// /api/v1/collab/{ontologyId}/ws 同理：WebSocket 升级握手需要专用 header，
+		// httptest 直接发普通 GET 会被 gorilla/websocket Upgrader 拒绝并返回
+		// 纯文本 400，无法用"Content-Type 是否 JSON"判定是否被路由命中。
+		if rt.Pattern == "/api/v1/stream" || rt.Pattern == "/api/v1/collab/{ontologyId}/ws" {
 			continue
 		}
 		path := concretePath(rt.Pattern)

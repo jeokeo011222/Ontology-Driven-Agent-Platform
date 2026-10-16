@@ -11,6 +11,8 @@ import (
 
 	"odap/internal/api/handlers"
 	"odap/internal/api/middleware"
+	"odap/internal/collab"
+	"odap/internal/mcp"
 	"odap/internal/reasoning"
 )
 
@@ -25,6 +27,11 @@ type Options struct {
 	// Reasoning 是推理引擎服务（模块 B）；nil 时 /api/v1/reasoning/* 端点
 	// 不注册（模块未装配，而非注册后返回 404——装配缺失必须在启动日志明示）。
 	Reasoning *reasoning.Service
+
+	// MCP 是 MCP（Model Context Protocol）服务端；nil 时 /api/v1/mcp 端点
+	// 仍注册但返回 503（fail-closed）——让外部 AI IDE 能发现端点存在，
+	// 只是当前版本未启用 MCP。
+	MCP *mcp.MCPServer
 }
 
 // RouteSpec 是一条路由的声明（供路由测试与 openapi 交叉核对）。
@@ -41,6 +48,13 @@ type RouteSpec struct {
 	// 两个已实现且已注册的端点恒定返回纯文本 404（详见实现符合性评测清单 L2）。
 	Public bool
 }
+
+// collabManager 是进程内的协同编辑房间管理器（按 ontologyId 隔离）。
+// collab 是纯进程内转发（yjs CRDT + 二进制帧中继），无需依赖注入，
+// 包级 defaultManager 已兜底；此处显式构造一份，便于装配期注入带上下文的 logger。
+var collabManager = collab.NewManager(slog.Default())
+
+func init() { collab.SetManager(collabManager) }
 
 // routes 是全部业务路由的单一真源：注册与文档核对共用同一份声明。
 func routes(h *handlers.Handler) []RouteSpec {
@@ -60,6 +74,19 @@ func routes(h *handlers.Handler) []RouteSpec {
 		{http.MethodPost, "/api/v1/runs/{id}/cancel", h.CancelRun, false},
 		{http.MethodPost, "/api/v1/runs/{id}/reconcile", h.ReconcileRun, false},
 		{http.MethodPost, "/api/v1/runs/{id}/lease/renew", h.RenewLease, false},
+
+		// Chat Sessions（迁移 000046：多轮对话持久化）
+		{http.MethodPost, "/api/v1/chat/sessions", h.CreateChatSession, false},
+		{http.MethodGet, "/api/v1/chat/sessions", h.ListChatSessions, false},
+		{http.MethodGet, "/api/v1/chat/sessions/{id}", h.GetChatSession, false},
+		{http.MethodPatch, "/api/v1/chat/sessions/{id}", h.UpdateChatSession, false},
+		{http.MethodDelete, "/api/v1/chat/sessions/{id}", h.DeleteChatSession, false},
+		{http.MethodPost, "/api/v1/chat/sessions/{id}/archive", h.ArchiveChatSession, false},
+		{http.MethodPost, "/api/v1/chat/sessions/{id}/messages", h.AddChatMessage, false},
+		{http.MethodGet, "/api/v1/chat/sessions/{id}/messages", h.ListChatMessages, false},
+
+		// 协同编辑 WebSocket（P1-3 新增：y-websocket 二进制帧中继）
+		{http.MethodGet, "/api/v1/collab/{ontologyId}/ws", h.OntologyCollabWS, false},
 
 		// Agent
 		{http.MethodGet, "/api/v1/agents", h.ListAgents, false},
@@ -83,6 +110,8 @@ func routes(h *handlers.Handler) []RouteSpec {
 		{http.MethodPost, "/api/v1/ontologies/{id}/publish", h.PublishOntology, false},
 		// 本体产物（RDF/OWL/SHACL 文本，由 manifest 派生，无需先校验）
 		{http.MethodGet, "/api/v1/ontologies/{id}/artifacts", h.GetOntologyArtifacts, false},
+		// 本体自然语言问答（NL→SPARQL：自然语言 → graphstore.Pattern → Match）
+		{http.MethodPost, "/api/v1/ontology/nl-query", h.NlQuery, false},
 
 		// Plugin
 		{http.MethodGet, "/api/v1/plugins", h.ListPlugins, false},
@@ -302,6 +331,12 @@ func NewRouter(deps handlers.Deps, opts Options) http.Handler {
 			apiMux.HandleFunc(rt.Method+" "+rt.Pattern, rt.Handler)
 		}
 	}
+	// MCP 端点：StreamableHTTPServer 同时处理 GET（建立 SSE 会话）和
+	// POST（JSON-RPC 调用）。即使 MCP server 未装配（nil），也必须注册路由——
+	// 让 AI IDE 能发现端点存在，仅在真正调用时返回 503（fail-closed）。
+	mh := handlers.NewMCPHandler(opts.MCP)
+	apiMux.HandleFunc("GET /api/v1/mcp", mh.ServeMCP)
+	apiMux.HandleFunc("POST /api/v1/mcp", mh.ServeMCP)
 	var apiChain http.Handler = apiMux
 	apiChain = middleware.RequireIdentity(apiChain)
 	apiChain = middleware.Auth(opts.Resolver)(apiChain)

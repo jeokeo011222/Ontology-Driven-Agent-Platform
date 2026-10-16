@@ -192,6 +192,213 @@ paths:
                     items: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  # ── 聊天会话（新增：2026-10-16 P0-4）──
+  /api/v1/chat/sessions:
+    get:
+      tags: [Chat]
+      summary: 查询当前用户的聊天会话列表
+      operationId: listChatSessions
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [ACTIVE, ARCHIVED]
+      responses:
+        "200":
+          description: 会话列表（cursor 分页）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ChatSession" }
+                  next_cursor: { type: string, nullable: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Chat]
+      summary: 创建新的聊天会话
+      operationId: createChatSession
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string, minLength: 1, maxLength: 200 }
+                ontology_id: { type: string, format: uuid, nullable: true }
+      responses:
+        "201":
+          description: 会话已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChatSession" }
+        "400": { `$ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/chat/sessions/{id}:
+    get:
+      tags: [Chat]
+      summary: 查询单个聊天会话详情
+      operationId: getChatSession
+      parameters:
+        - `$ref: "#/components/parameters/IdPath"
+      responses:
+        "200":
+          description: 会话详情
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChatSession" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    patch:
+      tags: [Chat]
+      summary: 更新聊天会话标题
+      operationId: updateChatSession
+      parameters:
+        - `$ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChatSession" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    delete:
+      tags: [Chat]
+      summary: 删除聊天会话（级联删除所有消息）
+      operationId: deleteChatSession
+      parameters:
+        - `$ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "204": { description: 已删除 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/chat/sessions/{id}/archive:
+    post:
+      tags: [Chat]
+      summary: 归档聊天会话
+      operationId: archiveChatSession
+      parameters:
+        - `$ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: 已归档
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChatSession" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/chat/sessions/{id}/messages:
+    get:
+      tags: [Chat]
+      summary: 查询会话的消息列表（按时间正序，cursor 分页）
+      operationId: listChatMessages
+      parameters:
+        - `$ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: 消息列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ChatMessage" }
+                  next_cursor: { type: string, nullable: true }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Chat]
+      summary: 向会话追加一条消息
+      operationId: addChatMessage
+      parameters:
+        - `$ref: "#/components/parameters/IdPath"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role, content]
+              properties:
+                role:
+                  type: string
+                  enum: [user, assistant, system]
+                content: { type: string, minLength: 1, maxLength: 10000 }
+                run_id: { type: string, format: uuid, nullable: true }
+      responses:
+        "201":
+          description: 消息已添加
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChatMessage" }
+        "400": { `$ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/collab/{ontologyId}/ws:
+    get:
+      tags: [Collab]
+      summary: 本体协同编辑 WebSocket（y-websocket provider）
+      description: |
+        二进制帧中继端点。客户端以 `Sec-WebSocket-Protocol: y-ws` 升级后，
+        yjs 同步帧（update sync / awareness）原样广播给同房间其他客户端，
+        CRDT 冲突解决由 yjs 客户端自身完成；本端点不做持久化。
+      operationId: ontologyCollabWS
+      parameters:
+        - name: ontologyId
+          in: path
+          required: true
+          description: 本体 ID（房间按 ontologyId 隔离）
+          schema: { type: string, format: uuid }
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: WebSocket 端点就绪（连接建立后升级为 101）
+        "101":
+          description: WebSocket 升级成功，开始中继 yjs 二进制帧
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /api/v1/runs:
     get:
       tags: [Runs]
@@ -758,6 +965,145 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "422": { $ref: "#/components/responses/ValidationFailed" }
         "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/ontology/nl-query:
+    post:
+      tags: [Ontologies]
+      summary: 自然语言问答（NL→SPARQL：自然语言 → graphstore.Pattern → Match）
+      description: |
+        用自然语言对本体知识进行查询。典型问题："财务部有哪些类？"、
+        "报销相关的约束是什么？"、"哪些实例的审批人是张三？"。
+
+        流程：
+        1. 按 `ontology_key` 读取该本体最新版本的 manifest，构造词项命名空间
+           与 IRI 白名单（类/关系/属性的全部声明 IRI + RDF/RDFS 内置词表）。
+        2. 调用大模型把自然语言转成结构化查询意图（subject/predicate/object
+           三槽位的 Pattern）；槽位为空代表通配。
+        3. 严格校验模型输出的每个 IRI 必须命中白名单（防幻觉）。
+        4. 把 Pattern 交给图存储执行 Match，返回原始三元组。
+        5. 模型生成中文自然语言总结（answer）并返回置信度。
+
+        **严格 fail-closed**：
+        - `ontology_key` 不存在或本体没有版本 → 404；
+        - 持久化适配器 / GraphStore / 模型网关任一未装配 → 503；
+        - 模型输出非法 JSON 或引用白名单外的 IRI → 422；
+        - 图里没有匹配的三元组 → 200，`triples` 为空数组、`answer` 会说明原因，
+          **绝不伪造"查到了 0 条"但 answer 含糊其辞**。
+      operationId: nlOntologyQuery
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [ontology_key, question]
+              properties:
+                ontology_key:
+                  type: string
+                  minLength: 1
+                  description: 本体业务键（ontology_key，不是 ontology_id）。
+                question:
+                  type: string
+                  minLength: 1
+                  description: 自然语言问题（中文或英文皆可）。
+                model_id:
+                  type: string
+                  description: |
+                    可选。点名模型 ID（Model Registry 已登记的版本）；省略时按能力择优路由。
+                top_k:
+                  type: integer
+                  minimum: 1
+                  maximum: 200
+                  default: 50
+                  description: 返回三元组条数上限；省略默认 50。
+      responses:
+        "200":
+          description: 查询成功（即使 triples 为空也返回 200）
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  - ontology_key
+                  - version_id
+                  - version
+                  - graph_iri
+                  - answer
+                  - triples
+                  - confidence
+                properties:
+                  ontology_key:
+                    type: string
+                  version_id:
+                    type: string
+                    description: 本次查询钉住的本体版本 ID（uuid 字符串）。
+                  version:
+                    type: string
+                    description: 本次查询钉住的本体版本号（展示用）。
+                  graph_iri:
+                    type: string
+                    description: 查询所针对的命名图 IRI。
+                  answer:
+                    type: string
+                    description: 大模型生成的自然语言总结（中文）。
+                  triples:
+                    type: array
+                    description: 实际命中的三元组集合（图存储返回原始匹配）。
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [S, P, O]
+                      properties:
+                        S:
+                          type: object
+                          required: [Kind, Lexical]
+                          properties:
+                            Kind:
+                              type: integer
+                              enum: [1, 2, 3]
+                              description: 1=IRI, 2=BlankNode, 3=Literal
+                            Lexical:
+                              type: string
+                            Datatype:
+                              type: string
+                              nullable: true
+                            Lang:
+                              type: string
+                              nullable: true
+                        P:
+                          type: object
+                          required: [Kind, Lexical]
+                          properties:
+                            Kind: { type: integer, enum: [1, 2, 3] }
+                            Lexical: { type: string }
+                            Datatype: { type: string, nullable: true }
+                            Lang: { type: string, nullable: true }
+                        O:
+                          type: object
+                          required: [Kind, Lexical]
+                          properties:
+                            Kind: { type: integer, enum: [1, 2, 3] }
+                            Lexical: { type: string }
+                            Datatype: { type: string, nullable: true }
+                            Lang: { type: string, nullable: true }
+                        GraphIRI: { type: string }
+                  confidence:
+                    type: number
+                    minimum: 0
+                    maximum: 1
+                    description: 模型对"查询意图翻译"正确性的主观置信度。
+                  model:
+                    type: string
+                    description: 实际被路由到的模型版本名（仅审计/追踪用）。
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationFailed" }
+        "503": { $ref: "#/components/responses/Unavailable" }
 
   /api/v1/ontologies/{id}:
     get:
@@ -3872,6 +4218,30 @@ components:
           schema: { $ref: "#/components/schemas/ErrorResponse" }
 
   schemas:
+    # ── 聊天会话 schemas（新增 2026-10-16 P0-4）──
+    ChatSession:
+      type: object
+      required: [id, title, tenant_id, subject_id, created_at, status]
+      properties:
+        id:              { type: string, format: uuid }
+        title:           { type: string }
+        ontology_id:     { type: string, format: uuid, nullable: true }
+        tenant_id:       { type: string, format: uuid }
+        subject_id:      { type: string, format: uuid }
+        status:          { type: string, enum: [ACTIVE, ARCHIVED] }
+        archived_at:     { type: string, format: date-time, nullable: true }
+        created_at:      { type: string, format: date-time }
+        updated_at:      { type: string, format: date-time }
+    ChatMessage:
+      type: object
+      required: [id, session_id, role, content, created_at]
+      properties:
+        id:              { type: string, format: uuid }
+        session_id:      { type: string, format: uuid }
+        role:            { type: string, enum: [user, assistant, system] }
+        content:         { type: string }
+        run_id:          { type: string, format: uuid, nullable: true }
+        created_at:      { type: string, format: date-time }
     Error:
       type: object
       required: [code, base_code, message, retryable]

@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 
+	"odap/internal/a2a"
 	"odap/internal/authorization"
 	"odap/internal/erp"
 	"odap/internal/harness"
@@ -152,6 +154,14 @@ type Executor struct {
 	Read  ReadExecutor
 	Write WriteGateway
 
+	// A2A 是出站 A2A 协议客户端（可选：为 nil 时拒绝远程 Agent 调用）。
+	// 当 NodeToolCall 的 tool_key 能在 RemoteAgents 解析为远程 Agent 登记时，
+	// 执行器会走 A2A Client 主动调用远端 Agent。
+	A2A *a2a.A2AClient
+	// RemoteAgents 是远程 Agent 注册表 Resolver（可选：为 nil 或 Resolve 失败时，
+	// NodeToolCall 走原有本地工具路径 / 回退到 READ 执行器）。
+	RemoteAgents a2a.RegistryResolver
+
 	// SubjectID 是执行主体（Agent 版本/服务身份），用于授权请求；缺失则 fail-closed。
 	SubjectID ids.ID
 	// Scopes 是执行主体的数据范围（第三篇 §5.3）。
@@ -216,6 +226,9 @@ func (e *Executor) ExecuteNode(ctx context.Context, tenantID, runID ids.ID, node
 		return e.executeRead(ctx, tenantID, runID, node, tv, facts)
 	case NodeWriteTool:
 		return e.executeWrite(ctx, tenantID, runID, node, tv, facts, decision)
+	case NodeToolCall:
+		// 优先尝试远程 Agent 调用（A2A），否则回退到本地工具路径（READ 执行器）。
+		return e.executeToolCall(ctx, tenantID, runID, node, tv, facts)
 	case NodeApprovalGate:
 		if err := e.advance(ctx, runID, harness.EventApprovalRequested, facts); err != nil {
 			return NodeResult{}, err
@@ -441,6 +454,101 @@ func parseNodeArgs(node Node) (map[string]any, error) {
 func stringAttr(m map[string]any, key string) string {
 	if v, ok := m[key].(string); ok {
 		return v
+	}
+	return ""
+}
+
+// ---------------------------------------------------------------------------
+// NodeToolCall 执行：A2A 远程 Agent 调用 ↔ 本地 READ 回退
+// ---------------------------------------------------------------------------
+
+// executeToolCall 执行 NodeToolCall 节点。
+//
+// 路由逻辑：
+//  1. A2A 客户端与 RemoteAgents Resolver 均已装配，且 tool_key 能在 Resolver
+//     解析出 ACTIVE 状态的远程 Agent → 走 A2A Client 主动调用（SendMessage 同步等待）；
+//  2. 否则 → 回退到本地 READ 执行器，要求工具 EffectClass=READ（与 executeRead 同形）。
+//
+// 不自动重试远端调用（fail-closed 原则）：超时 / 网络错误 / 远端业务错误一律如实传播。
+func (e *Executor) executeToolCall(ctx context.Context, tenantID, runID ids.ID, node Node, tv *tools.ToolVersion, facts harness.TransitionFacts) (NodeResult, error) {
+	if e.A2A != nil && e.RemoteAgents != nil && strings.TrimSpace(node.ToolKey) != "" {
+		ref, err := e.RemoteAgents.Resolve(ctx, node.ToolKey)
+		if err == nil && ref != nil {
+			// 解析到远程 Agent → 走 A2A Client。
+			return e.executeRemoteAgent(ctx, tenantID, runID, node, ref, facts)
+		}
+		// Resolve 失败不视为硬错误——可能 tool_key 本来就是本地工具，继续回退到本地路径。
+	}
+
+	// 本地路径：复用 executeRead 的契约（强制 READ 效果类 + schema 校验）。
+	return e.executeRead(ctx, tenantID, runID, node, tv, facts)
+}
+
+// executeRemoteAgent 通过 A2A Client 主动调用远端 Agent。
+//
+// 入参约定：node.Params 中 text / objective 字段作为 A2A message.text 发送；
+// 其余字段按 SendParams.params 传入 metadata。远端 task 进入终态后返回
+// artifacts 合成的 JSON 输出，超时则返回 accepted 状态 + task_id（供调用方轮询）。
+func (e *Executor) executeRemoteAgent(ctx context.Context, tenantID, runID ids.ID, node Node, ref *a2a.RemoteAgentRef, facts harness.TransitionFacts) (NodeResult, error) {
+	args, err := parseNodeArgs(node)
+	if err != nil {
+		return NodeResult{}, err
+	}
+
+	text := firstString(args, "text", "objective", "message")
+	if text == "" {
+		return NodeResult{}, errors.E(errors.CodeValidationFailed,
+			"agent: 远程 Agent 调用节点缺少 text / objective / message 参数")
+	}
+
+	metadata := &a2a.SendMetadata{}
+	if v := stringAttr(args, "agent_key"); v != "" {
+		metadata.AgentKey = v
+	}
+	if v := stringAttr(args, "ontology_version_id"); v != "" {
+		metadata.OntologyVersionID = v
+	}
+
+	if err := e.advance(ctx, runID, harness.EventStepStarted, facts); err != nil {
+		return NodeResult{}, err
+	}
+
+	task, err := e.A2A.SendMessage(ctx,
+		a2a.GatewayURL(ref.BaseURL),
+		ref.AuthHeaderName, ref.AuthHeaderRef,
+		a2a.Message{Role: "user", Parts: []a2a.MessagePart{{Text: text}}},
+		metadata)
+	if err != nil {
+		_ = e.advance(ctx, runID, harness.EventStepFailed, facts)
+		return NodeResult{NodeID: node.ID, Status: NodeStatusFailed}, err
+	}
+
+	// 合成 JSON 输出（task 对象整体序列化，便于上游统一消费）。
+	out, _ := json.Marshal(task)
+	res := NodeResult{
+		NodeID:       node.ID,
+		Status:       NodeStatusSucceeded,
+		Output:       out,
+		EvidenceRefs: append([]string{}, node.EvidenceRefs...),
+	}
+	if !a2a.IsTaskTerminal(task) {
+		// 远端未在同步等待窗口内完成 → 状态标注 UNKNOWN，由上游决定是否轮询。
+		res.Status = NodeStatusUnknown
+		res.ErrorCode = "A2A_TASK_PENDING"
+	}
+	if err := e.advance(ctx, runID, harness.EventStepSucceeded, facts); err != nil {
+		return NodeResult{}, err
+	}
+	_ = e.saveStep(ctx, tenantID, runID, res)
+	return res, nil
+}
+
+// firstString 按 key 顺序取 args 中第一个非空字符串。
+func firstString(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
+			return v
+		}
 	}
 	return ""
 }

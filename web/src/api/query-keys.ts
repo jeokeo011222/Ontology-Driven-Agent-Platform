@@ -157,4 +157,11 @@ export const queryKeys = {
     detail: (id: string) => ['actions', 'detail', id] as const,
     similar: (id: string) => ['actions', 'similar', id] as const,
   },
+
+  /* 聊天会话（迁移 000046：AssistantPage 多轮对话持久化） */
+  chat: {
+    sessions: (status?: string) => ['chat', 'sessions', status ?? 'all'] as const,
+    session: (id: string) => ['chat', 'session', id] as const,
+    messages: (sessionId: string) => ['chat', 'messages', sessionId] as const,
+  },
 } as const;

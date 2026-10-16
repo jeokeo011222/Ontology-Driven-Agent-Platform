@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -65,6 +66,57 @@ func (s *Store) OntologyVersionSnapshot(ctx context.Context, ontologyID ids.ID) 
 		}
 		if len(rows) == 0 {
 			return errors.E(errors.CodeNotFound, "本体不存在或没有版本")
+		}
+		row := rows[0]
+		rec := &OntologyVersionSnapshot{
+			OntologyID:  asString(row["ontology_id"]),
+			OntologyKey: asString(row["ontology_key"]),
+			Name:        asString(row["name"]),
+			VersionID:   asString(row["version_id"]),
+			Version:     asString(row["version"]),
+			Status:      asString(row["status"]),
+		}
+		if raw := asString(row["manifest"]); raw != "" {
+			rec.Manifest = json.RawMessage(raw)
+		}
+		out = rec
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// OntologyVersionSnapshotByKey 与 OntologyVersionSnapshot 同构，但按
+// ontology_key（唯一业务键）定位，返回该本体最新版本的校验快照。
+//
+// 自然语言问答（NL→SPARQL）端点入参是 ontology_key：语义层查询必须钉住
+// 一份确定性的 TBox/ABox 与词项命名空间，因此以"最新版本"作为查询锚点
+// 是明确且可复现的选择（不会出现"上次答的是 V2、这次因为有人发了 V3
+// 就答 V3"的静默漂移——漂移只可能发生在版本发布时，且版本号会在返回
+// 体里显式告知调用方）。
+func (s *Store) OntologyVersionSnapshotByKey(ctx context.Context, ontologyKey string) (*OntologyVersionSnapshot, error) {
+	k := strings.TrimSpace(ontologyKey)
+	if k == "" {
+		return nil, errors.E(errors.CodeInvalidArgument, "ontology_key 不能为空")
+	}
+	var out *OntologyVersionSnapshot
+	err := s.TenantTx(ctx, func(tx pgx.Tx) error {
+		rows, err := queryMaps(ctx, tx, `
+            SELECT o.id::text AS ontology_id, o.ontology_key, o.name,
+                   v.id::text AS version_id, v.version, v.status,
+                   v.manifest::text AS manifest
+              FROM ontology.ontologies o
+              JOIN ontology.ontology_versions v ON v.ontology_id = o.id
+             WHERE o.ontology_key = $1
+             ORDER BY v.created_at DESC
+             LIMIT 1`, k)
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return errors.E(errors.CodeNotFound, "本体不存在（按 ontology_key 未找到）或没有任何版本")
 		}
 		row := rows[0]
 		rec := &OntologyVersionSnapshot{

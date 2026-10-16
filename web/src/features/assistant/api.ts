@@ -1,5 +1,11 @@
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { apiPost, fetchList } from '@/api/client';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  apiDelete,
+  apiGet,
+  apiPatch,
+  apiPost,
+  fetchList,
+} from '@/api/client';
 import { queryKeys } from '@/api/query-keys';
 import { newIdempotencyKey } from '@/lib/http';
 import type { OntologySummary, Run } from '@/types';
@@ -50,5 +56,159 @@ export function useWorkspaceOntologies() {
   return useQuery({
     queryKey: queryKeys.workspace.ontologies(),
     queryFn: () => fetchList<OntologySummary>('/workspace/ontologies', { limit: 200 }),
+  });
+}
+
+// =============================================================================
+// 聊天会话（迁移 000046：多轮对话持久化）
+// =============================================================================
+//
+// 契约（与后端 internal/api/store/chat.go 严格对应）：
+//   POST   /api/v1/chat/sessions                       → CreateChatSession
+//   GET    /api/v1/chat/sessions                       → ListChatSessions
+//   GET    /api/v1/chat/sessions/{id}                  → GetChatSession
+//   PATCH  /api/v1/chat/sessions/{id}                  → UpdateChatSession
+//   DELETE /api/v1/chat/sessions/{id}                  → DeleteChatSession
+//   POST   /api/v1/chat/sessions/{id}/archive          → ArchiveChatSession
+//   POST   /api/v1/chat/sessions/{id}/messages         → AddChatMessage
+//   GET    /api/v1/chat/sessions/{id}/messages         → ListChatMessages
+
+/** app.chat_sessions 行。 */
+export interface ChatSession {
+  id: string;
+  title: string;
+  ontology_id?: string;
+  tenant_id: string;
+  subject_id: string;
+  created_at: string;
+  updated_at: string;
+  archived_at?: string;
+  status: 'ACTIVE' | 'ARCHIVED';
+}
+
+/** app.chat_messages 行。 */
+export interface ChatMessage {
+  id: string;
+  session_id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  run_id?: string;
+  created_at: string;
+}
+
+/** POST /chat/sessions 请求体。subject_id 不在前端请求体内——后端从身份上下文提取。 */
+export interface CreateChatSessionInput {
+  title: string;
+  ontology_id?: string;
+}
+
+/** PATCH /chat/sessions/{id} 请求体。目前只开放 title 修改。 */
+export interface UpdateChatSessionInput {
+  title: string;
+}
+
+/** POST /chat/sessions/{id}/messages 请求体。 */
+export interface AddChatMessageInput {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  run_id?: string;
+}
+
+// --- 查询 hooks ---
+
+/** GET /chat/sessions（当前用户的会话，默认只返回 ACTIVE；status='ARCHIVED' 时返回归档）。 */
+export function useChatSessions(status?: string) {
+  return useQuery({
+    queryKey: queryKeys.chat.sessions(status),
+    queryFn: () => fetchList<ChatSession>('/chat/sessions', { status, limit: 10 }),
+  });
+}
+
+/** GET /chat/sessions/{id}（详情）。 */
+export function useChatSession(id: string | null) {
+  return useQuery({
+    queryKey: queryKeys.chat.session(id ?? ''),
+    enabled: Boolean(id),
+    queryFn: () => apiGet<ChatSession>(`/chat/sessions/${encodeURIComponent(String(id))}`),
+  });
+}
+
+/** GET /chat/sessions/{id}/messages（created_at ASC cursor 分页，默认 50/页覆盖典型多轮对话）。 */
+export function useChatMessages(sessionId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.chat.messages(sessionId ?? ''),
+    enabled: Boolean(sessionId),
+    queryFn: () => fetchList<ChatMessage>(`/chat/sessions/${encodeURIComponent(String(sessionId))}/messages`, { limit: 50 }),
+  });
+}
+
+// --- 写操作 mutation hooks ---
+
+export function useCreateChatSession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateChatSessionInput) =>
+      apiPost<ChatSession>('/chat/sessions', input, {
+        idempotencyKey: newIdempotencyKey('chat-session-create'),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.chat.sessions() });
+    },
+  });
+}
+
+export function useUpdateChatSession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, title }: { id: string; title: string }) =>
+      apiPatch<ChatSession>(`/chat/sessions/${encodeURIComponent(id)}`, { title }, {
+        idempotencyKey: newIdempotencyKey(`chat-session-update-${id}`),
+      }),
+    onSuccess: (_data, vars) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.chat.sessions() });
+      void qc.invalidateQueries({ queryKey: queryKeys.chat.session(vars.id) });
+    },
+  });
+}
+
+export function useArchiveChatSession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiPost<ChatSession>(`/chat/sessions/${encodeURIComponent(id)}/archive`, undefined, {
+        idempotencyKey: newIdempotencyKey(`chat-session-archive-${id}`),
+      }),
+    onSuccess: (_data, id) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.chat.sessions() });
+      void qc.invalidateQueries({ queryKey: queryKeys.chat.session(id) });
+    },
+  });
+}
+
+export function useDeleteChatSession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiDelete<null>(`/chat/sessions/${encodeURIComponent(id)}`, {
+        idempotencyKey: newIdempotencyKey(`chat-session-delete-${id}`),
+      }),
+    onSuccess: (_data, id) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.chat.sessions() });
+      void qc.invalidateQueries({ queryKey: queryKeys.chat.session(id) });
+      void qc.invalidateQueries({ queryKey: queryKeys.chat.messages(id) });
+    },
+  });
+}
+
+export function useAddChatMessage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, input }: { sessionId: string; input: AddChatMessageInput }) =>
+      apiPost<null>(`/chat/sessions/${encodeURIComponent(sessionId)}/messages`, input, {
+        idempotencyKey: newIdempotencyKey(`chat-msg-add-${sessionId}-${Date.now()}`),
+      }),
+    onSuccess: (_data, vars) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.chat.messages(vars.sessionId) });
+    },
   });
 }
